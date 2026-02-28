@@ -65,6 +65,9 @@ export const formatUnits = {
    * @returns formatted string with unit
    */
   distance: (meters: number, isMetric: boolean): string => {
+    if (meters === undefined || meters === null || isNaN(meters)) {
+      return isMetric ? "0.00m" : "0.00 ft";
+    }
     if (isMetric) {
       if (meters >= 1000) {
         return `${(meters / 1000).toFixed(2)} km`;

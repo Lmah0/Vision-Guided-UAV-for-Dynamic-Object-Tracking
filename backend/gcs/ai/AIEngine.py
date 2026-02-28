@@ -143,7 +143,7 @@ class TrackingEngine:
         
         # Fall back to CSRT if VitTrack failed or not available
         if self.tracker is None:
-            self.tracker = cv2.TrackerCSRT.create()
+            self.tracker = cv2.legacy.TrackerCSRT.create()
             self.tracker_type = 'csrt'
         
         self.tracker.init(frame, bbox)
@@ -213,9 +213,9 @@ class ProcessingState:
         if TrackingConfig.TRACKER_TYPE == 'dasiamrpn':
             # For DaSiamRPN - would need full implementation
             # For now, fall back to CSRT in ProcessingState
-            self.tracker = cv2.TrackerCSRT.create()
+            self.tracker = cv2.legacy.TrackerCSRT.create()
         else:
-            self.tracker = cv2.TrackerCSRT.create()
+            self.tracker = cv2.legacy.TrackerCSRT.create()
         
         self.tracker.init(frame, bbox)
         self.tracked_class = class_id
