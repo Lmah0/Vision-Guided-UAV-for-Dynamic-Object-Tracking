@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
+import signal
 import uvicorn
 import asyncio
 import json
@@ -29,6 +30,8 @@ VIDEO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai", "err
 active_connections: List[WebSocket] = []
 flight_comp_ws: WebSocket = None
 
+latencies = [] # For 533 testing - end to end latency from video timestamp to annotated frame send  
+
 # Video stream configuration
 GCS_VIDEO_PORT = os.getenv("GCS_VIDEO_PORT", 5000)
 STREAM_URL = "udp://"+ os.getenv(
@@ -37,6 +40,8 @@ FLIGHT_COMP_URL = f"ws://{os.getenv('FLIGHT_COMP_IP')}:{os.getenv('RPI_BACKEND_P
 newest_telemetry = {}
 
 telemetry_event = asyncio.Event()
+
+shutdown_event = asyncio.Event()
 
 process_frame_executor: Optional[ThreadPoolExecutor] = None
 
@@ -87,6 +92,7 @@ async def video_streaming_task():
     """Background task that reads video, processes through AI, and streams via WebRTC"""
     print("Starting receive video stream background task...")
     global newest_telemetry
+    global latencies
     # Start Live Receiver
     video_receiver.start()
     # Target 60 FPS for the loop
@@ -171,6 +177,15 @@ async def video_streaming_task():
                 # Send to WebRTC
                 if annotated_frame is not None:
                     write_frame(annotated_frame)
+                
+                 # FOR 533, print end-to-end latency
+                latencies.append(time.time() - metadata['video_timestamp'])
+                if metadata.get('stop_test') == True:
+                    print("Average latency over all frames: {:.2f}ms".format((sum(latencies)/len(latencies))*1000))
+                    print("P95 latency: {:.2f}ms".format(np.percentile(latencies, 95)*1000))
+                    print("P99 latency: {:.2f}ms".format(np.percentile(latencies, 99)*1000))
+                    shutdown_event.set() 
+                    break  
 
             except Exception as e:
                 print(f"Error processing frame: {e}")
@@ -223,9 +238,20 @@ async def lifespan(app: FastAPI):
     tasks = [asyncio.create_task(flight_computer_background_task()), asyncio.create_task(video_streaming_task()), asyncio.create_task(follows_background_task())]
     global process_frame_executor
     process_frame_executor = ThreadPoolExecutor(max_workers=1)
+    
+    # Create a task that monitors for the shutdown signal
+    async def watch_for_shutdown():
+        await shutdown_event.wait()
+        print("[GCS] Shutdown signal received.")
+        # This is a bit "hacky" for Uvicorn but effective for automation:
+        os.kill(os.getpid(), signal.SIGINT) 
+
+    shutdown_task = asyncio.create_task(watch_for_shutdown())
+
     yield
 
     print("[GCS] Shutting down...")
+    shutdown_task.cancel() 
     for t in tasks:
         t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)

@@ -1,3 +1,4 @@
+import threading
 import datetime
 import os
 import random
@@ -44,6 +45,7 @@ FPS = 60
 
 current_telemetry_callback = None
 frame_count = 0
+stop_test = False
 
 def build_pipeline_string():
     """
@@ -77,6 +79,7 @@ def video_frame_probe(pad, info, klv_src):
     Triggered whenever a video frame passes the camera source.
     """
     global frame_count
+    global stop_test
     
     capture_time = time.time()
     
@@ -92,6 +95,7 @@ def video_frame_probe(pad, info, klv_src):
     klv_data = {
         "frame_number": frame_count,
         "video_timestamp": capture_time, 
+        "stop_test": stop_test
     }
     klv_data.update(telemetry_data)
     # Create GStreamer Buffer and add data
@@ -115,6 +119,15 @@ def video_frame_probe(pad, info, klv_src):
     frame_count += 1
     return Gst.PadProbeReturn.OK
 
+
+def trigger_stop():
+    """
+    Background function to flip the global stop_test flag.
+    """
+    global stop_test
+    print("\n[TIMER] Test duration reached. Setting stop_test = True")
+    stop_test = True
+
 def start_streaming_video_and_telemetry(telemetry_callback=None):
     global current_telemetry_callback
     current_telemetry_callback = telemetry_callback
@@ -137,6 +150,9 @@ def start_streaming_video_and_telemetry(telemetry_callback=None):
 
     pipeline.set_state(Gst.State.PLAYING)
 
+    test_timer = threading.Timer(60, trigger_stop)
+    test_timer.start()
+
     # Run MainLoop (Keeps script alive without eating CPU)
     loop = GLib.MainLoop()
     try:
@@ -146,6 +162,7 @@ def start_streaming_video_and_telemetry(telemetry_callback=None):
     except Exception as e:
         print(f"Error: {e}")
     finally:
+        test_timer.cancel()
         pipeline.set_state(Gst.State.NULL)
 
 
