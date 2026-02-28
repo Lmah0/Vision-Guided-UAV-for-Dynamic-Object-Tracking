@@ -16,10 +16,11 @@ _current_frame = None
 # WebRTC peer connections
 _peer_connections = set()
 
+
 class AIVideoStreamTrack(VideoStreamTrack):
     """
     Custom video track that streams AI-processed frames via WebRTC.
-    Architecture: latest-frame (overwrite) buffer
+    Optimized for Low Latency using Wall Clock timestamps.
     """
     def __init__(self):
         super().__init__()

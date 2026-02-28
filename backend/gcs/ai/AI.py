@@ -3,12 +3,11 @@ GCS Backend AI Processor: WebSocket-based detection and tracking.
 Uses TrackingEngine for code sharing - EXACT SAME approach as mouse_hover_refactored.py
 """
 import time
-import asyncio
 import traceback
 import numpy as np
 from collections import deque
 from .AIEngine import TelemetryRecorder, TrackingEngine, ProcessingState, CursorHandler, process_detection_mode, process_tracking_mode
-from GeoLocate import locate
+from GeoLocate import locate, locate_with_fixed_gimbal
 
 ENGINE = TrackingEngine()
 STATE = ProcessingState()
@@ -64,10 +63,9 @@ def print_fps():
 
 print("AI Processor initialized, ready to process frames...")
 
-async def process_frame(frame, metadata, cursor_pos=None, click_pos=None):
+def process_frame(frame, metadata, cursor_pos=None, click_pos=None):
     """Process a single frame through the AI pipeline and return the annotated frame"""
     try:
-        await asyncio.sleep(0)  # Yield for cooperative multitasking
         
         frame_start_time = time.time()
         
@@ -95,6 +93,11 @@ async def process_frame(frame, metadata, cursor_pos=None, click_pos=None):
                 current_lon = metadata["longitude"]
                 heading = metadata["heading"]
 
+                # Information for fixed gimbal
+                roll = metadata["roll"]
+                pitch = metadata["pitch"]
+                yaw = metadata["yaw"]
+
                 # --- Calculate Target Location ---
                 image_center_x = frame.shape[1] / 2
                 image_center_y = frame.shape[0] / 2
@@ -105,7 +108,8 @@ async def process_frame(frame, metadata, cursor_pos=None, click_pos=None):
                 obj_x_px = bbox_center_x - image_center_x
                 obj_y_px = bbox_center_y - image_center_y
                 
-                target_lat, target_lon = locate(current_lat, current_lon, current_alt, heading, obj_x_px, obj_y_px)
+                # target_lat, target_lon = locate(current_lat, current_lon, current_alt, heading, obj_x_px, obj_y_px) # TODO: Will need this back when we switch to 2D gimbal
+                target_lat, target_lon = locate_with_fixed_gimbal(bbox_center_x, bbox_center_y, current_lat, current_lon, current_alt, roll, pitch, yaw)
                 STATE.last_target_lat = target_lat
                 STATE.last_target_lon = target_lon
                 
