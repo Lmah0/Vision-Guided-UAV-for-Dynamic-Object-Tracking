@@ -84,13 +84,13 @@ echo "Setting up .bashrc..."
 echo -e "\n# LOCK2A Aliases and Functions" >> "$HOME/.bashrc"
 
 # Add alias to cd to ~/LOCK2A
-echo "alias cdlock='cd ~/LOCK2A/Capstone-LOCK-2A'" >> "$HOME/.bashrc"
+echo "alias cd-lock='cd ~/LOCK2A/Capstone-LOCK-2A'" >> "$HOME/.bashrc"
 
 # Add alias to run server.py
-echo "alias runserver='python3 ~/LOCK2A/Capstone-LOCK-2A/Drone/flightComputer/server.py'" >> "$HOME/.bashrc"
+echo "alias run-server='python3 ~/LOCK2A/Capstone-LOCK-2A/Drone/flightComputer/server.py'" >> "$HOME/.bashrc"
 
 # Add alias to run source venv
-echo "alias sourcevenv='source ~/LOCK2A/venv/bin/activate'" >> "$HOME/.bashrc"
+echo "alias source-lock='source ~/LOCK2A/venv/bin/activate'" >> "$HOME/.bashrc"
 
 # Add bash function to run the mavproxy.py
 echo "function runMavMod() {
@@ -99,7 +99,7 @@ echo "function runMavMod() {
         echo \"Error: Module \$1 not found in MAVProxy modules directory.\"
         return 1
     fi
-    python3 mavproxy.py --out=udp:127.0.0.1:5005\"
+    python3 mavproxy.py --out=udp:127.0.0.1:5006\"
 }" >> "$HOME/.bashrc"
 
 echo "Applying new aliases and functions..."
