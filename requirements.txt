@@ -13,7 +13,6 @@ geographiclib==2.1
 av
 aiortc
 aiohttp
-navpy
 # Testing Dependencies
 pytest
 pytest-asyncio
