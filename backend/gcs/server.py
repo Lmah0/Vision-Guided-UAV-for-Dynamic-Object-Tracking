@@ -88,12 +88,12 @@ async def video_streaming_task():
     print("Starting receive video stream background task...")
     global newest_telemetry
     # Start Live Receiver
-    video_receiver.start()
+    await asyncio.to_thread(video_receiver.start)    
     # Target 60 FPS for the loop
     target_interval = 1.0 / 60.0
 
-    # Start fallback video once at the beginning
-    cap = cv2.VideoCapture(VIDEO_PATH)
+    # Start fallback video once at the beginning asynchronously
+    cap = await asyncio.to_thread(cv2.VideoCapture, VIDEO_PATH)
     fallback_available = cap.isOpened()
     if not fallback_available:
         print(f"Error. Could not open fallback video: {VIDEO_PATH}")
@@ -103,17 +103,16 @@ async def video_streaming_task():
             loop_start = time.time()
 
             # --- Try Reading Live Stream ---
-            frame, metadata = video_receiver.read()
-
+            frame, metadata = await asyncio.to_thread(video_receiver.read)
             # --- Fallback Logic ---
             if frame is None:
                 if fallback_available:
-                    ret, file_frame = cap.read()
+                    ret, file_frame = await asyncio.to_thread(cap.read)
 
                     # Handle End of File (Loop video)
                     if not ret:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        ret, file_frame = cap.read()
+                        await asyncio.to_thread(cap.set, cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, file_frame = await asyncio.to_thread(cap.read)
 
                     if ret:
                         frame = file_frame
