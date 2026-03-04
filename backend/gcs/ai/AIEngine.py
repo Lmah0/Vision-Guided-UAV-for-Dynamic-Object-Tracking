@@ -3,6 +3,7 @@ import time
 import cv2
 import numpy as np
 import torch
+import math
 from ultralytics import YOLO
 
 class CursorHandler:
@@ -60,10 +61,10 @@ class TelemetryRecorder:
         - tracking enabled
         """
         point = {
-            "timestamp": data["timestamp"],
+            "timestamp": data["receive_time"],
             "latitude": float(data["latitude"]),
             "longitude": float(data["longitude"]),
-            "speed": float(data["speed"]),
+            "speed": math.sqrt(float(data["dlat"])**2 + float(data["dlon"])**2 + float(data["dalt"])**2),
             "heading": float(data["heading"]),
         }
         self.recorded_data.append(point)

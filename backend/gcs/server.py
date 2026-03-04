@@ -130,7 +130,7 @@ async def video_streaming_task():
                                 "roll":-1,
                                 "pitch":-1,
                                 "yaw":-1,
-                                "flight_mode":-1,
+                                "mode":-1,
                                 "battery_remaining":-1,
                                 "battery_voltage":-1,
                                 "altitude" : -1,
@@ -196,24 +196,40 @@ async def video_streaming_task():
 async def follows_background_task():
     """Background task that manages following target logic"""
     while True:
-        if STATE.tracking:
-            if newest_telemetry['mode'] != "Guided":
-                print("Attempting to enter follows mode...")
-                await send_data_to_connections({"command": "set_flight_mode", "mode": "Guided"}, flight_comp_ws)
-                await asyncio.sleep(2) # Wait for mode change (delay on ArduPilot's side)
-                print("Entered Guided mode for follows.")
+        try:
+            if STATE.tracking:
+                # Safely check if we have telemetry data yet
+                if not newest_telemetry:
+                    print("Waiting for telemetry data...")
+                    await asyncio.sleep(1)
+                    continue
 
-            follows_altitude = 15.0 # Hard coding the follows altitude to 15 meters (50 ft) for now
-            if STATE.last_target_lat is not None and STATE.last_target_lon is not None:
-                try:
-                    await send_data_to_connections({"command": "move_to_location", "location": {
-                            "lat": STATE.last_target_lat,
-                            "lon": STATE.last_target_lon,
-                            "alt": follows_altitude
-                        }}, flight_comp_ws)
-                    print(f"Sent follow command to flight computer: lat {STATE.last_target_lat}, lon {STATE.last_target_lon}, alt {follows_altitude}")
-                except Exception as e:
-                    print(f"Failed to send follow command: {e}")
+                current_mode = newest_telemetry.get('flight_mode')
+                
+                if current_mode != "Guided":
+                    print("Please enter guided mode before attempting to follow.")
+                    continue
+
+                follows_altitude = 15.0 # Hard coding the follows altitude to 15 meters (50 ft) for now
+                if STATE.last_target_lat is not None and STATE.last_target_lon is not None:
+                    try:
+                        await send_to_flight_comp({
+                            "command": "move_to_location", 
+                            "location": {
+                                "lat": STATE.last_target_lat,
+                                "lon": STATE.last_target_lon,
+                                "alt": follows_altitude
+                            }
+                        })  
+                        print(f"Sent follow command to flight computer: lat {STATE.last_target_lat}, lon {STATE.last_target_lon}, alt {follows_altitude}")
+                    except Exception as e:
+                        print(f"Failed to send follow command: {e}")
+                
+        except Exception as e:
+            # This prevents the task from dying silently if a bad packet comes through
+            print(f"Crash prevented in follows task: {e}")
+            traceback.print_exc()
+
         await asyncio.sleep(2) # Send follows commands every 2 seconds for now
 
 @asynccontextmanager
@@ -408,7 +424,6 @@ def save_current_recording():
     classification = "unknown"
     if STATE.tracked_class is not None:
         classification = ENGINE.model.names[STATE.tracked_class]
-
     record_telemetry_data(tracked_obj_data, classification=classification)
 
 
