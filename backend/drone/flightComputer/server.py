@@ -30,7 +30,7 @@ basic_telemetry = {
     "last_time": None,
     "latitude": None,
     "longitude": None,
-    "rth_altitude": None,
+    "altitude": None,
     "dlat": None,
     "dlon": None,
     "dalt": None,

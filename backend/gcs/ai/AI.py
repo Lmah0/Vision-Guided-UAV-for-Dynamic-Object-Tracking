@@ -7,7 +7,7 @@ import traceback
 import numpy as np
 from collections import deque
 from .AIEngine import TelemetryRecorder, TrackingEngine, ProcessingState, CursorHandler, process_detection_mode, process_tracking_mode
-from GeoLocate import locate, locate_with_fixed_gimbal
+from GeoLocate import locate
 
 ENGINE = TrackingEngine()
 STATE = ProcessingState()
@@ -108,8 +108,7 @@ def process_frame(frame, metadata, cursor_pos=None, click_pos=None):
                 obj_x_px = bbox_center_x - image_center_x
                 obj_y_px = bbox_center_y - image_center_y
                 
-                # target_lat, target_lon = locate(current_lat, current_lon, current_alt, heading, obj_x_px, obj_y_px) # TODO: Will need this back when we switch to 2D gimbal
-                target_lat, target_lon = locate_with_fixed_gimbal(bbox_center_x, bbox_center_y, current_lat, current_lon, current_alt, roll, pitch, yaw)
+                target_lat, target_lon = locate(current_lat, current_lon, current_alt, heading, obj_x_px, obj_y_px)
                 STATE.last_target_lat = target_lat
                 STATE.last_target_lon = target_lon
                 

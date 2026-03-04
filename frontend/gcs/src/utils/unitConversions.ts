@@ -66,7 +66,7 @@ export const formatUnits = {
    */
   distance: (meters: number, isMetric: boolean): string => {
     if (meters === undefined || meters === null || isNaN(meters)) {
-      return isMetric ? "0.00 m" : "0.00 ft";
+      return isMetric ? "0.00m" : "0.00 ft";
     }
     if (isMetric) {
       if (meters >= 1000) {
