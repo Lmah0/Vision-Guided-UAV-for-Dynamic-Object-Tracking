@@ -46,10 +46,10 @@ process_frame_executor: Optional[ThreadPoolExecutor] = None
 csv_telemetry_data: List[Dict[str, Any]] = []
 
 # Non-tracking idle telemetry behavior
-IDLE_ATTITUDE_JITTER = 0.0001
+IDLE_ATTITUDE_JITTER = 0.1
 IDLE_SPEED_JITTER = 0.01
 IDLE_ALTITUDE_JITTER = 0.01
-
+IDLE_ROLL_PITCH_YAW_JITTER = 0.01
 
 def load_csv_telemetry() -> List[Dict[str, Any]]:
     """Load and normalize telemetry rows from CSV one time at startup."""
@@ -120,9 +120,9 @@ def build_telemetry_message(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_idle_telemetry_message(base_row: Dict[str, Any]) -> Dict[str, Any]:
     """Build stable synthetic telemetry for non-tracking state."""
-    idle_roll = random.uniform(-IDLE_ATTITUDE_JITTER, IDLE_ATTITUDE_JITTER)
-    idle_pitch = random.uniform(-IDLE_ATTITUDE_JITTER, IDLE_ATTITUDE_JITTER)
-    idle_yaw = random.uniform(-IDLE_ATTITUDE_JITTER, IDLE_ATTITUDE_JITTER)
+    idle_roll = random.uniform(-IDLE_ROLL_PITCH_YAW_JITTER, IDLE_ROLL_PITCH_YAW_JITTER)
+    idle_pitch = random.uniform(-IDLE_ROLL_PITCH_YAW_JITTER, IDLE_ROLL_PITCH_YAW_JITTER)
+    idle_yaw = random.uniform(-IDLE_ROLL_PITCH_YAW_JITTER, IDLE_ROLL_PITCH_YAW_JITTER)
     idle_speed = max(0.0, random.uniform(0.0, IDLE_SPEED_JITTER))
     idle_altitude = base_row["altitude"] + random.uniform(-IDLE_ALTITUDE_JITTER, IDLE_ALTITUDE_JITTER)
 
