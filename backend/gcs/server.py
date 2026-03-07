@@ -51,9 +51,7 @@ async def flight_computer_background_task():
                 async for message in ws:
                     try:
                         data = json.loads(message)
-
                         data["is_recording"] = TELEMETRY_RECORDER.is_recording
-
                         data["tracking"] = STATE.tracking # Add tracking state
                         if STATE.tracked_class is not None and ENGINE.model is not None:
                             data["tracked_class"] = ENGINE.model.names[STATE.tracked_class]
@@ -365,6 +363,7 @@ async def stop_following():
 @app.websocket("/ws/gcs")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for GCS frontend to send commands and receive telemetry"""
+    global aircraft_type
     await websocket.accept()
     active_connections.append(websocket)
     try:
@@ -379,6 +378,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif command_type == "click":
                     CURSOR_HANDLER.register_click(data.get("x"), data.get("y"))
                     print(f"Registered click at ({data.get('x')}, {data.get('y')})")
+                elif command_type == "set_aircraft_type":
+                    requested_aircraft_type = data.get("aircraft_type")
+                    if requested_aircraft_type in ["plane", "quadcopter"]:
+                        await send_data_to_connections(
+                            {"command": "set_aircraft_type", "type": requested_aircraft_type}
+                        )
+                    else:
+                        await websocket.send_text(json.dumps({
+                            "status": 400,
+                            "error": "Invalid aircraft_type. Expected 'plane' or 'quadcopter'."
+                        }))
 
             except json.JSONDecodeError:
                 pass

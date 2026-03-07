@@ -4,14 +4,15 @@ import FlightIcon from '@mui/icons-material/Flight';
 import { formatUnits } from "../../../utils/unitConversions";
 import { useWebSocket } from "../../../providers/WebSocketProvider";
 import { flightModeMapping } from "@/utils/flightModeMapping";
+import { DroneIcon } from "@/utils/droneIcon";
 
 interface FlightModeProps {
     isMetric: boolean;
-    followDistance: number;
 }
 
-export default function FlightMode({ isMetric, followDistance }: FlightModeProps) {
-    const { trackingData, flightMode } = useWebSocket();
+export default function FlightMode({ isMetric }: FlightModeProps) {
+    const { trackingData, aircraftType, flightMode } = useWebSocket();
+    const isQuadcopter = (aircraftType || '').toLowerCase() === 'quadcopter';
 
     return (
         <Paper
@@ -30,25 +31,24 @@ export default function FlightMode({ isMetric, followDistance }: FlightModeProps
             }}
         >
             <Box className="flex items-center gap-1.5">
-                <FlightIcon sx={{ color: '#3b82f6', fontSize: 30 }} />
+                {isQuadcopter ? (
+                    <DroneIcon sx={{ color: '#3b82f6', fontSize: 30 }} />
+                ) : (
+                    <FlightIcon sx={{ color: '#3b82f6', fontSize: 30 }} />
+                )}
                 <Typography id='flight-mode' className="text-white font-bold">
                     {flightModeMapping[flightMode as unknown as number]}
                 </Typography>
             </Box>
 
             {trackingData?.tracking ? (
-                <Box className="flex flex-col items-end gap-0.5">
+                <Box className="flex flex-col items-end">
                     <Box className="flex items-center gap-1.5">
                         <Typography variant="caption" className="text-neutral-400 text-xs">
                             Tracking:
                         </Typography>
                         <Typography variant="caption" className="font-semibold text-sm">
                             {trackingData.tracked_class?.toUpperCase() || 'UNKNOWN'}
-                        </Typography>
-                    </Box>
-                    <Box className="flex items-center gap-1">
-                        <Typography id='dist-to-target' variant="body2" className="text-neutral-300">
-                            Target: {formatUnits.distance(trackingData?.distance_to_target, isMetric)}
                         </Typography>
                     </Box>
                 </Box>

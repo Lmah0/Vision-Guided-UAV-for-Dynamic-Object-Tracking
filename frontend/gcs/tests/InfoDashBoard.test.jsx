@@ -16,6 +16,7 @@ console.error = jest.fn();
 // Reset mocks before each test
 beforeEach(() => {
   jest.clearAllMocks();
+  const mockSendMessage = jest.fn();
   useWebSocket.mockReturnValue({
     connectionStatus: 'connected',
     droneConnection: true,
@@ -24,6 +25,8 @@ beforeEach(() => {
     batteryData: null,
     trackingData: { tracking: false, tracked_class: null },
     flightMode: 3,
+    aircraftType: 'quadcopter',
+    sendMessage: mockSendMessage,
   });
   axios.post.mockResolvedValue({ status: 200, data: {} });
   axios.get.mockResolvedValue({ status: 200, data: [] });
@@ -191,19 +194,25 @@ test('Controls Tab Displays Controls', () => {
   const followDistanceInput = document.getElementById('follow-distance-input');
   expect(followDistanceInput).toBeInTheDocument();
 
-  const flightModeSelect = screen.getByRole('combobox');
+  const flightModeSelect = document.getElementById('flight-mode-select');
   expect(flightModeSelect).toBeInTheDocument();
+
+  const aircraftTypeSelect = document.getElementById('aircraft-type-select');
+  expect(aircraftTypeSelect).toBeInTheDocument();
 
   const hudToggle = document.getElementById('hud-elements-toggle');
   expect(hudToggle).toBeInTheDocument();
 });
 
 test('Toggle Recording', async () => {
+  const mockSendMessage = jest.fn();
   useWebSocket.mockReturnValue({
     telemetryData: null,
     isRecording: false,
     trackingData: { tracking: false, tracked_class: null },
     flightMode: 3,
+    aircraftType: 'quadcopter',
+    sendMessage: mockSendMessage,
     setIsRecording: jest.fn()
   });
 
@@ -282,8 +291,8 @@ test('Flight Mode Selection', async () => {
   const controlsTab = screen.getByRole('tab', { name: /controls/i });
   fireEvent.click(controlsTab);
 
-  // Find the Select component by role
-  const flightModeSelect = screen.getByRole('combobox');
+  // Find the flight mode select component
+  const flightModeSelect = document.getElementById('flight-mode-select');
   expect(flightModeSelect).toBeInTheDocument();
 
   // Check that the current flight mode is displayed (mocked as 3 = 'Auto')
@@ -341,4 +350,39 @@ test('Toggle HUD Visibility On', () => {
   // Click to toggle off
   fireEvent.click(hudToggle);
   expect(mockProps.setShowHUDElements).toHaveBeenLastCalledWith(true);
+});
+
+test('Aircraft Type Selection Sends WebSocket Command', () => {
+  const mockSendMessage = jest.fn();
+  useWebSocket.mockReturnValue({
+    connectionStatus: 'connected',
+    droneConnection: true,
+    telemetryData: null,
+    isRecording: false,
+    batteryData: null,
+    trackingData: { tracking: false, tracked_class: null },
+    flightMode: 3,
+    aircraftType: 'quadcopter',
+    sendMessage: mockSendMessage,
+  });
+
+  render(<InfoDashBoard {...mockProps} />);
+  test_main_container();
+
+  const controlsTab = screen.getByRole('tab', { name: /controls/i });
+  fireEvent.click(controlsTab);
+
+  const aircraftTypeSelect = document.getElementById('aircraft-type-select');
+  expect(aircraftTypeSelect).toBeInTheDocument();
+
+  fireEvent.mouseDown(aircraftTypeSelect);
+  const planeOption = screen.getByRole('option', { name: 'Plane' });
+  fireEvent.click(planeOption);
+
+  expect(mockSendMessage).toHaveBeenCalledWith(
+    JSON.stringify({
+      type: 'set_aircraft_type',
+      aircraft_type: 'plane',
+    })
+  );
 });

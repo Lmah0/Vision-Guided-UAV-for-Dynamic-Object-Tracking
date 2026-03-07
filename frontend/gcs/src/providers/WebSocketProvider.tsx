@@ -10,7 +10,8 @@ interface WebSocketContextType {
   batteryData: any;
   droneConnection: boolean;
   trackingData: any;
-  flightMode: Number;
+  flightMode: number;
+  aircraftType: string;
   isRecording: boolean;
   setIsRecording: (value: boolean) => void;
 }
@@ -35,7 +36,8 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const [batteryData, setBatteryData] = useState<any>(null);
   const [droneConnection, setDroneConnection] = useState<boolean>(false);
   const [trackingData, setTrackingData] = useState<trackingData | null>(null);
-  const [flightMode, setFlightMode] = useState<Number>(-1);
+  const [flightMode, setFlightMode] = useState<number>(-1);
+  const [aircraftType, setAircraftType] = useState<string>('quadcopter');
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -89,6 +91,9 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
               yaw: data.yaw });
 
           setFlightMode(data.flight_mode);
+          if (data.aircraft_type) {
+            setAircraftType(data.aircraft_type);
+          }
           
           if (data.battery_voltage && data.battery_remaining) {
             setBatteryData({
@@ -164,6 +169,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
     droneConnection,
     trackingData,
     flightMode,
+    aircraftType,
     isRecording,
     setIsRecording
   };

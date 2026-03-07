@@ -11,6 +11,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import { convertDistance } from '../../../utils/unitConversions';
 import { flightModeMapping } from '@/utils/flightModeMapping';
 import { useWebSocket } from '@/providers/WebSocketProvider';
+import { DroneIcon } from '../../../utils/droneIcon';
 import axios from 'axios';
 
 interface ControlsProps {
@@ -23,8 +24,9 @@ interface ControlsProps {
 }
 
 export default function Controls({ showHUDElements, setShowHUDElements, isMetric, setIsMetric, followDistance, setFollowDistance}: ControlsProps) {
-    const { trackingData, flightMode, isRecording, setIsRecording} = useWebSocket();
+    const { trackingData, aircraftType, flightMode, isRecording, setIsRecording, sendMessage } = useWebSocket();
     const [inputValue, setInputValue] = useState('');
+    const isQuadcopter = (aircraftType || '').toLowerCase() === 'quadcopter';
 
     useEffect(() => {
         const displayDistance = isMetric ? followDistance : convertDistance.metersToFeet(followDistance);
@@ -78,6 +80,14 @@ export default function Controls({ showHUDElements, setShowHUDElements, isMetric
         } catch (error) {
             console.error('Error sending flight mode to backend:', error);
         }
+    };
+
+    const handleAircraftTypeChange = (event: any) => {
+        const newAircraftType = event.target.value;
+        sendMessage(JSON.stringify({
+            type: 'set_aircraft_type',
+            aircraft_type: newAircraftType,
+        }));
     };
 
     const handleStopFollowing = async () => {
@@ -208,7 +218,11 @@ export default function Controls({ showHUDElements, setShowHUDElements, isMetric
                     }}
                 >
                     <Box className="flex items-center mb-2">
-                        <FlightIcon sx={{ color: 'white', mr: 1.5, fontSize: 20 }} />
+                        {isQuadcopter ? (
+                            <DroneIcon sx={{ color: 'white', mr: 1.5, fontSize: 20 }} />
+                        ) : (
+                            <FlightIcon sx={{ color: 'white', mr: 1.5, fontSize: 20 }} />
+                        )}
                         <Typography variant="subtitle1" className="text-white font-semibold">
                             Flight Mode
                         </Typography>
@@ -220,6 +234,7 @@ export default function Controls({ showHUDElements, setShowHUDElements, isMetric
                     
                     <FormControl fullWidth size="small">
                         <Select
+                            id='flight-mode-select'
                             value={flightModeMapping[flightMode as unknown as number]}
                             onChange={handleFlightModeChange}
                             sx={{
@@ -264,6 +279,79 @@ export default function Controls({ showHUDElements, setShowHUDElements, isMetric
                                     {modeName}
                                 </MenuItem>
                             ))}
+                        </Select>
+                    </FormControl>
+                </Paper>
+
+                {/* Aircraft Type Control */}
+                <Paper
+                    elevation={3}
+                    sx={{
+                        p: 2,
+                        backgroundColor: 'rgba(38, 38, 38, 0.9)',
+                        border: '1px solid rgba(255, 255, 255, 0.2)',
+                        borderRadius: 2,
+                    }}
+                >
+                    <Box className="flex items-center mb-2">
+                        {isQuadcopter ? (
+                            <DroneIcon sx={{ color: 'white', mr: 1.5, fontSize: 20 }} />
+                        ) : (
+                            <FlightIcon sx={{ color: 'white', mr: 1.5, fontSize: 20 }} />
+                        )}
+                        <Typography variant="subtitle1" className="text-white font-semibold">
+                            Aircraft Type
+                        </Typography>
+                    </Box>
+
+                    <Typography variant="caption" className="text-neutral-300 mb-3 block">
+                        Select aircraft type
+                    </Typography>
+
+                    <FormControl fullWidth size="small">
+                        <Select
+                            id='aircraft-type-select'
+                            value={aircraftType}
+                            onChange={handleAircraftTypeChange}
+                            sx={{
+                                backgroundColor: 'rgba(55, 65, 81, 0.8)',
+                                color: 'white',
+                                '& .MuiOutlinedInput-notchedOutline': {
+                                    borderColor: 'rgba(156, 163, 175, 0.3)',
+                                },
+                                '&:hover .MuiOutlinedInput-notchedOutline': {
+                                    borderColor: 'rgba(156, 163, 175, 0.5)',
+                                },
+                                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                    borderColor: '#10b981',
+                                },
+                                '& .MuiSelect-icon': {
+                                    color: 'white',
+                                },
+                            }}
+                            MenuProps={{
+                                PaperProps: {
+                                    sx: {
+                                        backgroundColor: 'rgba(38, 38, 38, 0.95)',
+                                        border: '1px solid rgba(255, 255, 255, 0.2)',
+                                        '& .MuiMenuItem-root': {
+                                            color: 'white',
+                                            '&:hover': {
+                                                backgroundColor: 'rgba(55, 65, 81, 0.8)',
+                                            },
+                                            '&.Mui-selected': {
+                                                backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                                                '&:hover': {
+                                                    backgroundColor: 'rgba(16, 185, 129, 0.3)',
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            }}
+                        >
+                            <MenuItem value="plane">Plane</MenuItem>
+                            <MenuItem value="quadcopter">Quadcopter</MenuItem>
                         </Select>
                     </FormControl>
                 </Paper>
