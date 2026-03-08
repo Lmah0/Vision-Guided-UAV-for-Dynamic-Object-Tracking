@@ -19,3 +19,4 @@ pytest
 pytest-asyncio
 pytest-cov
 httpx>=0.27.0
+psutil
