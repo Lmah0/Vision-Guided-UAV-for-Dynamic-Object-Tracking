@@ -92,15 +92,17 @@ _init_tracker_config()
 
 class TrackingEngine:
     def __init__(self):
-        model_path = 'yolov11n'
-        if not os.path.exists(model_path):
-            print(f"Warning: Model not found at {model_path}")
-            print("YOLO will attempt to download the model...")
-        else:
-            print(f"Loading model from: {model_path}")
-
-        # Public attributes for high-performance direct access (hot path)
-        self.model = YOLO("yolov11n.pt")
+        # Use yolo26n model
+        model_name = "yolo26n.pt"
+        
+        try:
+            print(f"Loading YOLO model: {model_name}")
+            self.model = YOLO(model_name)
+            print(f"✓ YOLO model loaded successfully")
+        except Exception as e:
+            print(f"Error loading YOLO model: {e}")
+            raise RuntimeError(f"Could not load YOLO model: {e}")
+        
         self.tracker = None  # Created on-demand in start_tracking()
         self.tracker_type = TrackingConfig.TRACKER_TYPE
         
@@ -174,6 +176,9 @@ class ProcessingState:
         # Last target geolocation
         self.last_target_lat = None
         self.last_target_lon = None
+        
+        # Tracking confidence monitoring
+        self.previous_bbox = None  # Previous tracking bbox for confidence calculation
 
         # GPU optimization
         self.gpu_available = torch.cuda.is_available()
@@ -207,6 +212,90 @@ class ProcessingState:
         self.last_rendered_tracking_frame = None
         self.target_latitude = None
         self.target_longitude = None
+        self.previous_bbox = None
+    
+    def calculate_iou(self, box1, box2):
+        """Calculate IOU between two bounding boxes (x, y, w, h format)"""
+        if box1 is None or box2 is None:
+            return 0.0
+        
+        x1, y1, w1, h1 = box1
+        x2, y2, w2, h2 = box2
+        
+        # Convert to (x1, y1, x2, y2)
+        box1_coords = (x1, y1, x1 + w1, y1 + h1)
+        box2_coords = (x2, y2, x2 + w2, y2 + h2)
+        
+        # Calculate intersection
+        xi1 = max(box1_coords[0], box2_coords[0])
+        yi1 = max(box1_coords[1], box2_coords[1])
+        xi2 = min(box1_coords[2], box2_coords[2])
+        yi2 = min(box1_coords[3], box2_coords[3])
+        
+        inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+        
+        # Calculate union
+        box1_area = w1 * h1
+        box2_area = w2 * h2
+        union_area = box1_area + box2_area - inter_area
+        
+        return inter_area / union_area if union_area > 0 else 0.0
+    
+    def calculate_movement(self, current_bbox, previous_bbox):
+        """Calculate center point movement in pixels"""
+        if current_bbox is None or previous_bbox is None:
+            return 0.0
+        
+        x1, y1, w1, h1 = current_bbox
+        x2, y2, w2, h2 = previous_bbox
+        
+        center1 = (x1 + w1/2, y1 + h1/2)
+        center2 = (x2 + w2/2, y2 + h2/2)
+        
+        distance = np.sqrt((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)
+        return distance
+    
+    def calculate_size_change(self, current_bbox, previous_bbox):
+        """Calculate change in bounding box size"""
+        if current_bbox is None or previous_bbox is None:
+            return 0.0
+        
+        _, _, w1, h1 = current_bbox
+        _, _, w2, h2 = previous_bbox
+        
+        area1 = w1 * h1
+        area2 = w2 * h2
+        
+        if area2 == 0:
+            return 0.0
+        return abs(area1 - area2) / area2
+    
+    def calculate_tracking_confidence(self, current_bbox, previous_bbox=None,
+                                     movement_threshold=50, size_change_threshold=0.2):
+        """
+        Calculate tracking confidence (0.0 to 1.0)
+        - Based on stability: movement, size change, and IOU overlap
+        """
+        if previous_bbox is None:
+            return 1.0
+        
+        # IOU-based confidence (how well boxes overlap)
+        iou = self.calculate_iou(current_bbox, previous_bbox)
+        iou_confidence = iou
+        
+        # Movement-based confidence
+        movement = self.calculate_movement(current_bbox, previous_bbox)
+        movement_confidence = max(0, 1 - (movement / movement_threshold))
+        
+        # Size change confidence
+        size_change = self.calculate_size_change(current_bbox, previous_bbox)
+        size_confidence = max(0, 1 - (size_change / size_change_threshold))
+        
+        # Weighted average (IOU weighted more heavily)
+        confidence = (iou_confidence * 0.5 + movement_confidence * 0.25 + size_confidence * 0.25)
+        
+        return confidence
+
     
     def start_tracking(self, frame, bbox, class_id):
         """Initialize tracking from a detection"""
@@ -385,6 +474,14 @@ def process_tracking_mode(frame, state):
     if success and bbox is not None:
         x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
         state.tracked_bbox = (x, y, w, h)
+        
+        # Calculate and print tracking confidence
+        if should_track and state.previous_bbox is not None:
+            confidence = state.calculate_tracking_confidence(state.tracked_bbox, state.previous_bbox)
+            print(f"[Frame {state.frame_count}] Tracking Confidence: {confidence:.3f} (70% threshold: {'✓ PASS' if confidence >= 0.70 else '✗ FAIL'})")
+        
+        # Update previous bbox for next confidence calculation
+        state.previous_bbox = state.tracked_bbox
         
         # Only render when we actually update the tracker
         if should_track:

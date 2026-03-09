@@ -6,11 +6,15 @@ Uses TrackingEngine for code sharing but inlines hot path for performance.
 import cv2
 import numpy as np
 import os
+import sys
 import time
 import argparse
 from collections import deque
 
-from backend.gcs.ai.AIEngine import TrackingEngine, ProcessingState, process_detection_mode, process_tracking_mode
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from AIEngine import TrackingEngine, ProcessingState, process_detection_mode, process_tracking_mode
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description='Interactive object detection and tracking')
@@ -20,13 +24,13 @@ COLLECT_STATS = args.stats
 
 # Get the directory where this script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
+ai_dir = os.path.dirname(script_dir)  # Parent directory (backend/gcs/ai/)
 
-# Use relative paths from the script directory
-VIDEO_PATH = os.path.join(script_dir, "video.mp4")
-MODEL_PATH = os.path.join(script_dir, "models", "yolo11n.pt")
+# Use paths relative to the AI module directory
+VIDEO_PATH = os.path.join(ai_dir, "video.mp4")
 
 # Initialize engine (reuses code with GCS backend)
-engine = TrackingEngine(MODEL_PATH)
+engine = TrackingEngine()
 
 # Direct references to engine attributes for hot path access (bypasses property overhead)
 model = engine.model
@@ -34,7 +38,20 @@ model = engine.model
 # Initialize processing state
 state = ProcessingState()
 
+# Check if video file exists, with helpful error message
+if not os.path.exists(VIDEO_PATH):
+    print(f"Error: Video file not found at {VIDEO_PATH}")
+    print(f"Expected location: {VIDEO_PATH}")
+    print(f"Current working directory: {os.getcwd()}")
+    sys.exit(1)
+
 cap = cv2.VideoCapture(VIDEO_PATH)
+
+if not cap.isOpened():
+    print(f"Error: Could not open video file: {VIDEO_PATH}")
+    sys.exit(1)
+
+print(f"✓ Video loaded: {VIDEO_PATH}")
 
 cursor_x, cursor_y = 0, 0
 click_flag = False
