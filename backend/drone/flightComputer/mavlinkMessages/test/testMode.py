@@ -10,30 +10,30 @@ import connect as connect
 
 vehicle_connection = connect.connect_to_vehicle('127.0.0.1:14550')
 
-print("Setting mode to GUIDED...")
-mode.set_mode(vehicle_connection, mode.COPTER_MODES["GUIDED"])
+print("Setting mode to Guided...")
+mode.set_mode(vehicle_connection, "Guided")
 
 time.sleep(0.5)
 
-print("Setting mode to STABILIZE...")
-mode.set_mode(vehicle_connection, mode.COPTER_MODES["STABILIZE"])
+print("Setting mode to Stabilize...")
+mode.set_mode(vehicle_connection, "Stabilize")
 
 time.sleep(0.5)
 
-print("Setting mode to LOITER...")
-mode.set_mode(vehicle_connection, mode.COPTER_MODES["LOITER"])
+print("Setting mode to Alt Hold...")
+mode.set_mode(vehicle_connection, "Alt Hold")
 
 time.sleep(0.5)
+
+print("Setting mode to Land...")
+mode.set_mode(vehicle_connection, "Land")
+
+time.sleep(0.5)
+
+print("Setting mode to Auto...")
+mode.set_mode(vehicle_connection, "Auto")
 
 print("Setting mode to RTL...")
-mode.set_mode(vehicle_connection, mode.COPTER_MODES["RTL"])
-
-time.sleep(0.5)
-
-print("Setting mode to ACRO...")
-mode.set_mode(vehicle_connection, mode.COPTER_MODES["ACRO"])
-
-print("Setting mode to CIRCLE...")
-mode.set_mode(vehicle_connection, mode.COPTER_MODES["CIRCLE"])
+mode.set_mode(vehicle_connection, "RTL")
 
 print("Mode setting test completed.")
