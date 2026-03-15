@@ -130,7 +130,7 @@ async def video_streaming_task():
                                 "roll":-1,
                                 "pitch":-1,
                                 "yaw":-1,
-                                "mode":-1,
+                                "flight_mode":-1,
                                 "battery_remaining":-1,
                                 "battery_voltage":-1,
                                 "altitude" : -1,
