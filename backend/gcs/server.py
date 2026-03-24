@@ -28,10 +28,8 @@ load_dotenv(dotenv_path="../../.env")
 
 
 active_connections: List[WebSocket] = []
-flight_comp_ws: WebSocket = None
 
 # Video stream configuration
-FLIGHT_COMP_URL = f"ws://{os.getenv('FLIGHT_COMP_IP')}:{os.getenv('RPI_BACKEND_PORT', '5555')}/ws/flight-computer"
 newest_telemetry = {}
 
 telemetry_event = asyncio.Event()
@@ -40,7 +38,6 @@ process_frame_executor: Optional[ThreadPoolExecutor] = None
 
 async def flight_computer_background_task():
     """Background task that connects to flight computer and listens for telemetry"""
-    global flight_comp_ws
     while True:
         try:
             data = get_mock_telemetry() 
@@ -213,7 +210,7 @@ async def follows_background_task():
 async def lifespan(app: FastAPI):
     # Start background tasks    
     print("[GCS] Starting background tasks...")
-    tasks = [ asyncio.create_task(video_streaming_task()), asyncio.create_task(follows_background_task())]
+    tasks = [asyncio.create_task(flight_computer_background_task()), asyncio.create_task(video_streaming_task()), asyncio.create_task(follows_background_task())]
     global process_frame_executor
     process_frame_executor = ThreadPoolExecutor(max_workers=1)
     yield
