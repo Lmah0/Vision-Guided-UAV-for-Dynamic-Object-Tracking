@@ -138,3 +138,79 @@ def process_frame(frame, metadata, cursor_pos=None, click_pos=None):
         print(f"\nERROR processing frame: {e}")
         traceback.print_exc()
         return frame  # Return original frame on error
+    
+if __name__ == "__main__":
+    # To run with openCV window, run file from directory up as python -m ai.AI
+    import cv2
+
+    local_cursor_pos = (0, 0)
+    local_click_pos = None
+
+    def mouse_callback(event, x, y, flags, param):
+        global local_cursor_pos, local_click_pos
+        local_cursor_pos = (x, y)
+        if event == cv2.EVENT_LBUTTONDOWN:
+            local_click_pos = (x, y)
+            print(f"Local click registered at {local_click_pos}")
+
+    print("Opening USB Camera...")
+    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    if not cap.isOpened():
+        print("Error: Could not open camera.")
+        exit()
+
+    window_name = "AI Tracker Local Test"
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, mouse_callback)
+
+    print("========================================")
+    print("CONTROLS:")
+    print(" - Left Click: Track object at cursor")
+    print(" - Press 'c': Stop tracking (Keyboard)")
+    print(" - Press 'q': Quit application")
+    print("========================================")
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to grab frame.")
+                time.sleep(0.1)
+                continue
+
+            mock_metadata = {
+                "altitude": 100.0,
+                "latitude": 40.0,
+                "longitude": -75.0,
+                "heading": 0.0,
+                "roll": 0.0,
+                "pitch": 0.0,
+                "yaw": 0.0
+            }
+
+            annotated_frame = process_frame(
+                frame=frame, 
+                metadata=mock_metadata, 
+                cursor_pos=local_cursor_pos, 
+                click_pos=local_click_pos
+            )
+
+            # Clear the click after processing it once
+            if local_click_pos is not None:
+                local_click_pos = None
+
+            cv2.imshow(window_name, annotated_frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):     # Quit
+                break
+            elif key == ord('c'):   # Clear tracking
+                STATE.reset_tracking()
+                print("Tracking stopped via 'c' key. Returning to detection mode.")
+
+    except KeyboardInterrupt:
+        print("Test stopped by user.")
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()

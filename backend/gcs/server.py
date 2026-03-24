@@ -1,5 +1,8 @@
 """Main server for Ground Control Station (GCS) backend."""
 
+import datetime
+import random
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -19,20 +22,15 @@ from ai.AI import ENGINE, STATE, CURSOR_HANDLER, process_frame, TELEMETRY_RECORD
 from dotenv import load_dotenv
 from GeoLocate import calculate_horizontal_distance
 from webrtc import webrtc_router, write_frame, get_peer_connections
-from receiveVideoStream import VideoStreamReceiver
 import threading
 
 load_dotenv(dotenv_path="../../.env")
 
-VIDEO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai", "error-video.mp4")
 
 active_connections: List[WebSocket] = []
 flight_comp_ws: WebSocket = None
 
 # Video stream configuration
-GCS_VIDEO_PORT = os.getenv("GCS_VIDEO_PORT", 5000)
-STREAM_URL = "udp://"+ os.getenv(
-        "FLIGHT_COMP_IP", "192.168.1.66")+":" + str(GCS_VIDEO_PORT)  # Video from drone
 FLIGHT_COMP_URL = f"ws://{os.getenv('FLIGHT_COMP_IP')}:{os.getenv('RPI_BACKEND_PORT', '5555')}/ws/flight-computer"
 newest_telemetry = {}
 
@@ -45,107 +43,88 @@ async def flight_computer_background_task():
     global flight_comp_ws
     while True:
         try:
-            async with websockets.connect(FLIGHT_COMP_URL) as ws:
-                flight_comp_ws = ws
-                print("Connected to flight computer")   
-                async for message in ws:
-                    try:
-                        data = json.loads(message)
+            data = get_mock_telemetry() 
+            data["is_recording"] = TELEMETRY_RECORDER.is_recording
 
-                        data["is_recording"] = TELEMETRY_RECORDER.is_recording
-
-                        data["tracking"] = STATE.tracking # Add tracking state
-                        if STATE.tracked_class is not None and ENGINE.model is not None:
-                            data["tracked_class"] = ENGINE.model.names[STATE.tracked_class]
-                        else:
-                            data["tracked_class"] = None
-                        
-                        # Calculate distance from drone to target if tracking
-                        if STATE.tracking and STATE.target_latitude is not None and STATE.target_longitude is not None:
-                            drone_lat = data.get("latitude")
-                            drone_lon = data.get("longitude")
-                            if drone_lat is not None and drone_lon is not None:
-                                distance_meters = calculate_horizontal_distance(drone_lat, drone_lon, STATE.target_latitude, STATE.target_longitude)
-                                data["distance_to_target"] = distance_meters
-                            else:
-                                data["distance_to_target"] = None
-                        else:
-                            data["distance_to_target"] = None
-                        
-                        await send_data_to_connections(data)
-                    except json.JSONDecodeError:
-                        continue
+            data["tracking"] = STATE.tracking # Add tracking state
+            if STATE.tracked_class is not None and ENGINE.model is not None:
+                data["tracked_class"] = ENGINE.model.names[STATE.tracked_class]
+            else:
+                data["tracked_class"] = None
+            
+            # Calculate distance from drone to target if tracking
+            if STATE.tracking and STATE.target_latitude is not None and STATE.target_longitude is not None:
+                drone_lat = data.get("latitude")
+                drone_lon = data.get("longitude")
+                if drone_lat is not None and drone_lon is not None:
+                    distance_meters = calculate_horizontal_distance(drone_lat, drone_lon, STATE.target_latitude, STATE.target_longitude)
+                    data["distance_to_target"] = distance_meters
+                else:
+                    data["distance_to_target"] = None
+            else:
+                data["distance_to_target"] = None
+            
+            await send_data_to_connections(data)
+            await asyncio.sleep(0.1)
         except Exception as e:
             print(f"Flight computer connection error: {e}, retrying in 5s")
             flight_comp_ws = None
             await asyncio.sleep(5)
 
+def get_mock_telemetry():
+    """Simulates a drone flying in a circle."""
+    return {
+        "last_time": datetime.datetime.now().timestamp(),
+        "latitude": random.uniform(40.7123, 60.7133),
+        "longitude": random.uniform(-74.0065, -60.0055),
+        "rth_altitude": random.uniform(145.0, 155.0),
+        "dlat": random.uniform(0.1, 5.0), # Ground X speed (Latitude, positive north)
+        "dlon": random.uniform(0.1, 5.0), # Ground Y Speed (Longitude, positive east)
+        "dalt": random.uniform(0.1, 5.0), # Ground Z speed (Altitude, positive down)
+        "heading": random.randint(0, 360),
+        "roll": random.uniform(-5.0, 5.0),
+        "pitch": random.uniform(-5.0, 5.0),
+        "yaw": random.uniform(-5.0, 5.0),
+        "flight_mode": -1,
+        "battery_remaining": random.uniform(30.0, 100.0), # not receiving from vehicle yet
+        "battery_voltage": random.uniform(10.1, 80.6)   # not receiving from vehicle yet
+    }
 
 video_stop_event = threading.Event()
-video_receiver = VideoStreamReceiver(STREAM_URL)
+camera_executor = ThreadPoolExecutor(max_workers=1)
 async def video_streaming_task():
     """Background task that reads video, processes through AI, and streams via WebRTC"""
-    print("Starting receive video stream background task...")
+    print("Starting USB camera video stream...")
     global newest_telemetry
-    # Start Live Receiver
-    await asyncio.to_thread(video_receiver.start)    
-    # Target 60 FPS for the loop
+    loop = asyncio.get_event_loop()
+    cap = await loop.run_in_executor(camera_executor, cv2.VideoCapture, 0, cv2.CAP_DSHOW)  
+    if not cap.isOpened():
+        print("ERROR: Could not open USB camera at index 0. Check connection.")
+        return
+ 
+    await asyncio.to_thread(cap.set, cv2.CAP_PROP_FRAME_WIDTH,  1280)
+    await asyncio.to_thread(cap.set, cv2.CAP_PROP_FRAME_HEIGHT,  720)
+ 
+    print("USB camera opened successfully.")
+ 
     target_interval = 1.0 / 60.0
-
-    # Start fallback video once at the beginning asynchronously
-    cap = await asyncio.to_thread(cv2.VideoCapture, VIDEO_PATH)
-    fallback_available = cap.isOpened()
-    if not fallback_available:
-        print(f"Error. Could not open fallback video: {VIDEO_PATH}")
+    previous_tracking_state = False
 
     try:
         while not video_stop_event.is_set():
             loop_start = time.time()
 
-            # --- Try Reading Live Stream ---
-            frame, metadata = await asyncio.to_thread(video_receiver.read)
-            # --- Fallback Logic ---
-            if frame is None:
-                if fallback_available:
-                    ret, file_frame = await asyncio.to_thread(cap.read)
-
-                    # Handle End of File (Loop video)
-                    if not ret:
-                        await asyncio.to_thread(cap.set, cv2.CAP_PROP_POS_FRAMES, 0)
-                        ret, file_frame = await asyncio.to_thread(cap.read)
-
-                    if ret:
-                        frame = file_frame
-                        # Inject dummy metadata
-                        metadata = {
-                                "last_time": -1,
-                                "latitude":-1,
-                                "longitude":-1,
-                                "rth_altitude":-1,
-                                "dlat":-1,
-                                "dlon":-1,
-                                "dalt":-1,
-                                "heading":-1,
-                                "roll":-1,
-                                "pitch":-1,
-                                "yaw":-1,
-                                "flight_mode":-1,
-                                "battery_remaining":-1,
-                                "battery_voltage":-1,
-                                "altitude" : -1,
-                                "timestamp" : -1,
-                                "speed" : -1
-                        }
-
-            # --- If live video and mock both fail then sleep and retry ---
-            if frame is None:
+            ret, frame = await asyncio.to_thread(cap.read)
+            if not ret or frame is None:
+                print("Warning: failed to read frame from USB camera, retrying...")
                 await asyncio.sleep(0.1)
                 continue
             
-            newest_telemetry = metadata # Update newest telemetry for flight computer task
-            telemetry_event.set() # Notify flight_computer_background_task new telemetry is available
-            previous_tracking_state = False
-            
+            metadata = get_mock_telemetry()
+ 
+            newest_telemetry = metadata
+            telemetry_event.set()
+
             # --- D. AI Processing (Common for both sources) ---
             try:
                 # Get Cursor/Click data
@@ -186,11 +165,10 @@ async def video_streaming_task():
 
     finally:
         # Cleanup both sources
-        print("Stopping video sources...")
-        video_receiver.stop()
-        if cap.isOpened():
-            cap.release()
-    print("Video streaming task ended.")
+        print("Releasing USB camera...")
+        await asyncio.to_thread(cap.release)
+        print("Video streaming task ended.")
+
 
 async def follows_background_task():
     """Background task that manages following target logic"""
@@ -205,9 +183,9 @@ async def follows_background_task():
 
                 current_mode = newest_telemetry.get('flight_mode')
                 
-                if current_mode != "Guided":
-                    print("Please enter guided mode before attempting to follow.")
-                    continue
+                # if current_mode != "Guided":
+                #     print("Please enter guided mode before attempting to follow.")
+                #     continue
 
                 follows_altitude = 15.0 # Hard coding the follows altitude to 15 meters (50 ft) for now
                 if STATE.last_target_lat is not None and STATE.last_target_lon is not None:
@@ -235,7 +213,7 @@ async def follows_background_task():
 async def lifespan(app: FastAPI):
     # Start background tasks    
     print("[GCS] Starting background tasks...")
-    tasks = [asyncio.create_task(flight_computer_background_task()), asyncio.create_task(video_streaming_task()), asyncio.create_task(follows_background_task())]
+    tasks = [ asyncio.create_task(video_streaming_task()), asyncio.create_task(follows_background_task())]
     global process_frame_executor
     process_frame_executor = ThreadPoolExecutor(max_workers=1)
     yield
