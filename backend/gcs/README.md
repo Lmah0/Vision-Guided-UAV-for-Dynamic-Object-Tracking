@@ -43,4 +43,11 @@ cd GCS/backend
 python server.py
 ```
 
+### **Running Video and AI in OpenCV Window**:
+```bash
+cd GCS
+python -m ai.AI
+```
+
+
 ---
