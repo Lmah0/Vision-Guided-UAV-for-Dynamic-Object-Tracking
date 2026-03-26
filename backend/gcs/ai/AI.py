@@ -154,7 +154,7 @@ if __name__ == "__main__":
             print(f"Local click registered at {local_click_pos}")
 
     print("Opening USB Camera...")
-    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 

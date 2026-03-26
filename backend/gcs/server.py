@@ -74,7 +74,7 @@ def get_mock_telemetry():
         "last_time": datetime.datetime.now().timestamp(),
         "latitude": random.uniform(40.7123, 60.7133),
         "longitude": random.uniform(-74.0065, -60.0055),
-        "rth_altitude": random.uniform(145.0, 155.0),
+        "altitude": random.uniform(145.0, 155.0),
         "dlat": random.uniform(0.1, 5.0), # Ground X speed (Latitude, positive north)
         "dlon": random.uniform(0.1, 5.0), # Ground Y Speed (Longitude, positive east)
         "dalt": random.uniform(0.1, 5.0), # Ground Z speed (Altitude, positive down)
@@ -94,7 +94,7 @@ async def video_streaming_task():
     print("Starting USB camera video stream...")
     global newest_telemetry
     loop = asyncio.get_event_loop()
-    cap = await loop.run_in_executor(camera_executor, cv2.VideoCapture, 0, cv2.CAP_DSHOW)  
+    cap = await loop.run_in_executor(camera_executor, cv2.VideoCapture, 1)  
     if not cap.isOpened():
         print("ERROR: Could not open USB camera at index 0. Check connection.")
         return
@@ -111,7 +111,7 @@ async def video_streaming_task():
         while not video_stop_event.is_set():
             loop_start = time.time()
 
-            ret, frame = await asyncio.to_thread(cap.read)
+            ret, frame = await loop.run_in_executor(camera_executor, cap.read)
             if not ret or frame is None:
                 print("Warning: failed to read frame from USB camera, retrying...")
                 await asyncio.sleep(0.1)
