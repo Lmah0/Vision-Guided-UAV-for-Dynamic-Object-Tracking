@@ -49,7 +49,6 @@ export default function Home() {
             showHUDElements={showHUDElements} 
             pinnedTelemetry={pinnedTelemetry} 
             isMetric={isMetric} 
-            followDistance={followDistance}
         />
       </div>
       
