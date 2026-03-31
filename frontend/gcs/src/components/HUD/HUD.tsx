@@ -11,10 +11,9 @@ interface HUDProps {
     showHUDElements: boolean;
     pinnedTelemetry: string[];
     isMetric: boolean;
-    followDistance: number;
 }
 
-export default function HUD({ showHUDElements, pinnedTelemetry, isMetric, followDistance }: HUDProps) {
+export default function HUD({ showHUDElements, pinnedTelemetry, isMetric }: HUDProps) {
     const {droneConnection, isRecording} = useWebSocket();
     return (
         <div id='HUD' className="w-full h-full relative">
@@ -47,7 +46,7 @@ export default function HUD({ showHUDElements, pinnedTelemetry, isMetric, follow
                         <TelemetryData pinnedTelemetry={pinnedTelemetry} isMetric={isMetric} />
                     </div>
                     <div id='HUD-flight-mode' className="absolute bottom-4 left-4 z-10">
-                        <FlightMode isMetric={isMetric} followDistance={followDistance} />
+                        <FlightMode isMetric={isMetric} />
                     </div>
                     <div id='HUD-battery' className="absolute top-4 right-4 z-10">
                         <BatteryGuage />

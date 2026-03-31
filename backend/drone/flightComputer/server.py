@@ -23,6 +23,7 @@ load_dotenv(dotenv_path="../../.env")
 active_connections: List[WebSocket] = []
 
 vehicle_connection = None
+aircraft_type = "quadcopter"
 
 vehicle_ip = "udp:127.0.0.1:5006" # Need to run mavproxy module on 5006
 
@@ -39,6 +40,7 @@ basic_telemetry = {
     "pitch": None,
     "yaw": None,
     "flight_mode": -1,
+    "aircraft_type": aircraft_type,
     "battery_remaining": None,
     "battery_voltage": None
 }
@@ -107,8 +109,10 @@ async def send_data_to_connections(message: dict):
 
 async def send_telemetry_data():
     global basic_telemetry
+    global aircraft_type
     while True:
         with basic_telemetry_lock:
+            basic_telemetry["aircraft_type"] = aircraft_type
             await send_data_to_connections(basic_telemetry)
         await asyncio.sleep(1)
 
@@ -166,6 +170,7 @@ def moveToLocation(location):
 @app.websocket("/ws/flight-computer")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for GCS frontend to send commands and receive telemetry"""
+    global aircraft_type
     await websocket.accept()
     active_connections.append(websocket)
     try:
@@ -182,6 +187,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 setFollowDistance(msg.get("distance"))
             elif cmd == "stop_following":
                 stopFollowingTarget()
+            elif cmd == "set_aircraft_type":
+                requested_aircraft_type = msg.get("aircraft_type")
+                if requested_aircraft_type not in ["plane", "quadcopter"]:
+                    raise HTTPException(status_code=400, detail="Invalid aircraft type")
+                aircraft_type = requested_aircraft_type
+                with basic_telemetry_lock:
+                    basic_telemetry["aircraft_type"] = aircraft_type
+                print(f"Received aircraft type: {aircraft_type}")
             else:
                 raise HTTPException(status_code=400, detail="Unknown command")
 
