@@ -1,7 +1,6 @@
 """Main server for Ground Control Station (GCS) backend."""
 
 import datetime
-import random
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,22 +68,22 @@ async def flight_computer_background_task():
             await asyncio.sleep(5)
 
 def get_mock_telemetry():
-    """Simulates a drone flying in a circle."""
+    """Returns fixed telemetry values for the drone."""
     return {
-        "last_time": datetime.datetime.now().timestamp(),
-        "latitude": random.uniform(40.7123, 60.7133),
-        "longitude": random.uniform(-74.0065, -60.0055),
-        "altitude": random.uniform(145.0, 155.0),
-        "dlat": random.uniform(0.1, 5.0), # Ground X speed (Latitude, positive north)
-        "dlon": random.uniform(0.1, 5.0), # Ground Y Speed (Longitude, positive east)
-        "dalt": random.uniform(0.1, 5.0), # Ground Z speed (Altitude, positive down)
-        "heading": random.randint(0, 360),
-        "roll": random.uniform(-5.0, 5.0),
-        "pitch": random.uniform(-5.0, 5.0),
-        "yaw": random.uniform(-5.0, 5.0),
-        "flight_mode": -1,
-        "battery_remaining": random.uniform(30.0, 100.0), # not receiving from vehicle yet
-        "battery_voltage": random.uniform(10.1, 80.6)   # not receiving from vehicle yet
+        "last_time": 0,
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "altitude": 0.0,
+        "dlat": 0.0,
+        "dlon": 0.0,
+        "dalt": 0.0,
+        "heading": 0,
+        "roll": 0.0,
+        "pitch": 0.0,
+        "yaw": 0.0,
+        "flight_mode": 0,
+        "battery_remaining": 0.0,
+        "battery_voltage": 0.0
     }
 
 video_stop_event = threading.Event()
@@ -94,18 +93,33 @@ async def video_streaming_task():
     print("Starting USB camera video stream...")
     global newest_telemetry
     loop = asyncio.get_event_loop()
-    cap = await loop.run_in_executor(camera_executor, cv2.VideoCapture, 1)  
+    
+    # Try to open USB camera - prefer index 0 for USB cameras
+    # Index 0 is typically the built-in/USB camera, not iPhone
+    cap = await loop.run_in_executor(camera_executor, cv2.VideoCapture, 0)
+    
     if not cap.isOpened():
-        print("ERROR: Could not open USB camera at index 0. Check connection.")
+        print("ERROR: Could not open USB camera at index 0. Check USB camera connection.")
         return
+    
+    # Verify it's a real USB camera by checking frame properties
+    ret, test_frame = await loop.run_in_executor(camera_executor, cap.read)
+    if not ret or test_frame is None:
+        print("ERROR: USB camera opened but failed to read frames. Check camera connection.")
+        cap.release()
+        return
+    
+    print(f"✓ USB camera opened successfully. Frame shape: {test_frame.shape}")
  
     await asyncio.to_thread(cap.set, cv2.CAP_PROP_FRAME_WIDTH,  1280)
     await asyncio.to_thread(cap.set, cv2.CAP_PROP_FRAME_HEIGHT,  720)
  
-    print("USB camera opened successfully.")
+    print("USB camera configured successfully.")
  
     target_interval = 1.0 / 60.0
     previous_tracking_state = False
+    consecutive_frame_failures = 0
+    max_consecutive_failures = 10
 
     try:
         while not video_stop_event.is_set():
@@ -113,13 +127,30 @@ async def video_streaming_task():
 
             ret, frame = await loop.run_in_executor(camera_executor, cap.read)
             if not ret or frame is None:
-                print("Warning: failed to read frame from USB camera, retrying...")
+                consecutive_frame_failures += 1
+                print(f"Warning: failed to read frame from camera (attempt {consecutive_frame_failures}/{max_consecutive_failures})...")
+                
+                if consecutive_frame_failures >= max_consecutive_failures:
+                    print("ERROR: Too many consecutive frame read failures. Camera may be disconnected. Attempting to reconnect...")
+                    cap.release()
+                    await asyncio.sleep(1)
+                    cap = await loop.run_in_executor(camera_executor, cv2.VideoCapture, 1)
+                    if not cap.isOpened():
+                        print("ERROR: Failed to reconnect to camera. Retrying in 5 seconds...")
+                        await asyncio.sleep(5)
+                        continue
+                    consecutive_frame_failures = 0
+                    continue
+                
                 await asyncio.sleep(0.1)
                 continue
             
+            # Frame read successful, reset failure counter
+            consecutive_frame_failures = 0
+            
             metadata = get_mock_telemetry()
  
-            newest_telemetry = metadata
+            # newest_telemetry = metadata
             telemetry_event.set()
 
             # --- D. AI Processing (Common for both sources) ---
@@ -277,6 +308,7 @@ async def send_to_flight_comp(message: dict):
 def get_all_objects_endpoint():
     """Retrieve a list of all recorded objects with their classifications and timestamps"""
     try:
+        print("EFEF")
         return get_all_objects()
     except Exception as e:
         raise HTTPException(

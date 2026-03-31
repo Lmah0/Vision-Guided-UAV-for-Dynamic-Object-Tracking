@@ -31,8 +31,11 @@ class TrackingConfig:
     TRACKER_FRAME_SKIP =   1    # Skip N frames during tracking phase (0=every frame, 1=every 2nd)
     
     # --- Detection Parameters ---
-    CONFIDENCE_THRESHOLD = 0.1    # YOLO detection confidence threshold
+    CONFIDENCE_THRESHOLD = 0.3    # YOLO detection confidence threshold
     MODEL_IOU = 0.5               # NMS IOU threshold for YOLO
+    
+    # --- Tracking Confidence ---
+    MAX_CONSECUTIVE_TRACKING_FAILURES = 5  # Stop tracking if tracker fails this many frames in a row
     
     # --- Tracker Configuration ---
     PREFER_GPU_TRACKER = True     # Use VitTrack if available, otherwise use CSRT
@@ -175,6 +178,9 @@ class ProcessingState:
         # Last target geolocation
         self.last_target_lat = None
         self.last_target_lon = None
+        
+        # Tracking confidence monitoring
+        self.consecutive_tracking_failures = 0  # Track consecutive frames where tracker fails
 
         # GPU optimization
         self.gpu_available = torch.cuda.is_available()
@@ -208,6 +214,7 @@ class ProcessingState:
         self.last_rendered_tracking_frame = None
         self.target_latitude = None
         self.target_longitude = None
+        self.consecutive_tracking_failures = 0
     
     def start_tracking(self, frame, bbox, class_id):
         """Initialize tracking from a detection"""
@@ -322,37 +329,44 @@ def process_detection_mode(frame, model, state, cursor_pos, click_pos):
             classes = cls_vals.numpy()
         else:
             classes = np.array(cls_vals)
+        
+        # Filter to only humans (class_id == 0 in COCO dataset)
+        human_mask = classes == 0
+        boxes = boxes[human_mask]
+        classes = classes[human_mask]
             
         state.profile_boxes_ms = (time.time() - t_boxes_start) * 1000
         
         cursor_x, cursor_y = cursor_pos if cursor_pos else (0, 0)
         
-        # Draw all detections
+        # Draw human detections only
         t_drawing_start = time.time()
-        for i, box in enumerate(boxes):
-            x1, y1, x2, y2 = box
+        if len(boxes) > 0:
+            output_frame = frame.copy()
             
-            # Hover effect
-            if x1 <= cursor_x <= x2 and y1 <= cursor_y <= y2:
-                if output_frame is None:
-                    output_frame = frame.copy()
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = box
                 
-                # Draw outline + fill for hovered box
-                cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 200, 0), 2)
+                # Draw filled transparent box
                 overlay = output_frame.copy()
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), -1)
                 output_frame = cv2.addWeighted(overlay, 0.3, output_frame, 0.7, 0)
                 
+                # Draw outline
+                cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                
                 class_id = int(classes[i])
                 class_name = model.names[class_id]
                 cv2.putText(output_frame, class_name, (x1, y1 - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                 
-                # Click = start tracking
+                # Click on detection to start tracking
                 if click_pos is not None:
-                    state.start_tracking(frame, (x1, y1, x2 - x1, y2 - y1), class_id)
-                    mode_changed = True
-                    break
+                    click_x, click_y = click_pos
+                    if x1 <= click_x <= x2 and y1 <= click_y <= y2:
+                        state.start_tracking(frame, (x1, y1, x2 - x1, y2 - y1), class_id)
+                        mode_changed = True
+                        break
         state.profile_drawing_ms = (time.time() - t_drawing_start) * 1000
     
     return output_frame, results, mode_changed
@@ -380,8 +394,31 @@ def process_tracking_mode(frame, state):
     if should_track:
         success, bbox = state.tracker.update(frame)
         state.last_tracker_bbox = (success, bbox)
+        
+        # Check if object has left the frame (bbox completely out of bounds)
+        if success and bbox is not None:
+            x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            frame_height, frame_width = frame.shape[:2]
+            
+            # Object is out of frame if bbox is completely outside frame boundaries
+            if (x + w < 0 or x > frame_width or 
+                y + h < 0 or y > frame_height):
+                print("Object left the frame, stopping tracking")
+                success = False
+        
+        # Track consecutive tracking failures
+        if not success:
+            state.consecutive_tracking_failures += 1
+        else:
+            state.consecutive_tracking_failures = 0
     else:
         success, bbox = state.last_tracker_bbox if state.last_tracker_bbox else (False, None)
+    
+    # Stop tracking if too many consecutive failures (low tracking confidence)
+    if state.consecutive_tracking_failures >= TrackingConfig.MAX_CONSECUTIVE_TRACKING_FAILURES:
+        print(f"Tracking confidence too low ({state.consecutive_tracking_failures} consecutive failures), stopping tracking")
+        state.reset_tracking()
+        return None, False, True
     
     if success and bbox is not None:
         x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
