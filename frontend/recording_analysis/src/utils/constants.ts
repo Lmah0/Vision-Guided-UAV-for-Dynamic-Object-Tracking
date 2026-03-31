@@ -11,7 +11,7 @@ export const DEFAULT_MAP_CONFIG: MapConfig = {
 export const DEFAULT_ANIMATION_CONFIG: AnimationConfig = {
   stepsPerSegment: 60,
   hotspotsInterval: 40,
-  cameraOffset: 0.002,
+  cameraOffset: 0.0002,
   cameraDuration: 200,
 };
 

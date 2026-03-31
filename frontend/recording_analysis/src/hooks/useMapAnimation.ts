@@ -110,8 +110,8 @@ export const useMapAnimation = ({map, marker, pathCoordinates, telemetryData, co
       const cameraPos = offsetBehind(currentPos, bearing, config.cameraOffset);
       map.current!.easeTo({
         center: cameraPos,
-        zoom: 16,
-        pitch: 60,
+        zoom: 20,
+        pitch: 45,
         bearing,
         duration: config.cameraDuration,
         easing: (t) => t,

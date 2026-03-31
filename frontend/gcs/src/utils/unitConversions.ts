@@ -91,9 +91,9 @@ export const formatUnits = {
    */
   degrees: (degrees: number | undefined | null): string => {
     if (degrees === undefined || degrees === null || isNaN(degrees)) {
-      return "0.000°";
+      return "0.00000°";
     }
-    return `${degrees.toFixed(3)}°`;
+    return `${degrees.toFixed(5)}°`;
   },
   
   /**
@@ -103,10 +103,10 @@ export const formatUnits = {
    */
   degreesWithTextUnit: (degrees: number | undefined | null): { value: string, unit: string } => {
     if (degrees === undefined || degrees === null || isNaN(degrees)) {
-      return { value: "0.0000", unit: "degrees" };
+      return { value: "0.00000", unit: "degrees" };
     }
     return {
-      value: degrees.toFixed(4),
+      value: degrees.toFixed(5),
       unit: "degrees"
     };
   },

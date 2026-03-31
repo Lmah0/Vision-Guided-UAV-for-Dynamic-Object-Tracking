@@ -4,18 +4,19 @@ import datetime
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
+import csv
 import uvicorn
 import asyncio
 import json
 import traceback
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional 
+from typing import List, Optional, Dict, Any
 import os
 import websockets
 import cv2
 import time
-import numpy as np
+import random
 from database import get_all_objects, delete_object, record_telemetry_data
 from ai.AI import ENGINE, STATE, CURSOR_HANDLER, process_frame, TELEMETRY_RECORDER
 from dotenv import load_dotenv
@@ -31,9 +32,165 @@ active_connections: List[WebSocket] = []
 # Video stream configuration
 newest_telemetry = {}
 
+TELEMETRY_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry.csv")
+TELEMETRY_STREAM_MIN_INTERVAL_SEC = float(os.getenv("TELEMETRY_STREAM_MIN_INTERVAL_SEC", "1.0"))
+
 telemetry_event = asyncio.Event()
 
 process_frame_executor: Optional[ThreadPoolExecutor] = None
+csv_telemetry_data: List[Dict[str, Any]] = []
+
+# Non-tracking idle telemetry behavior
+IDLE_ATTITUDE_JITTER = 0.1
+IDLE_SPEED_JITTER = 0.01
+IDLE_ALTITUDE_JITTER = 0.01
+IDLE_ROLL_PITCH_YAW_JITTER = 0.01
+
+def load_csv_telemetry() -> List[Dict[str, Any]]:
+    """Load and normalize telemetry rows from CSV one time at startup."""
+    rows: List[Dict[str, Any]] = []
+
+    if not os.path.exists(TELEMETRY_CSV_PATH):
+        print(f"Telemetry CSV not found: {TELEMETRY_CSV_PATH}")
+        return rows
+
+    with open(TELEMETRY_CSV_PATH, mode="r", newline="") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            try:
+                timestamp_ms = float(row.get("timestamp(ms)", 0.0))
+                altitude = float(row.get("BARO[1].Alt", 0.0))
+                latitude = float(row.get("GPS[0].Lat", 0.0)) / 1e7
+                longitude = float(row.get("GPS[0].Lng", 0.0)) / 1e7
+                pitch = float(row.get("ATT.Pitch", 0.0))
+                yaw = float(row.get("ATT.Yaw", 0.0))
+                roll = float(row.get("ATT.Roll", 0.0))
+                speed = float(row.get("GPS[0].Spd", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            rows.append(
+                {
+                    "timestamp_ms": timestamp_ms,
+                    "altitude": altitude,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "pitch": pitch,
+                    "yaw": yaw,
+                    "roll": roll,
+                    "speed": speed,
+                }
+            )
+
+    print(f"Loaded {len(rows)} telemetry rows from CSV.")
+    return rows
+
+
+def build_telemetry_message(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Map CSV telemetry row to frontend websocket payload format."""
+    return {
+        "timestamp": row["timestamp_ms"],
+        "altitude": row["altitude"],
+        "latitude": row["latitude"],
+        "longitude": row["longitude"],
+        "pitch": row["pitch"],
+        "yaw": row["yaw"],
+        "roll": row["roll"],
+        "speed": row["speed"],
+        # Frontend derives speed using sqrt(dlat^2 + dlon^2 + dalt^2)
+        "dlat": row["speed"],
+        "dlon": 0.0,
+        "dalt": 0.0,
+        "flight_mode": -1,
+        "battery_remaining": None,
+        "battery_voltage": None,
+        "tracking": STATE.tracking,
+        "tracked_class": ENGINE.model.names[STATE.tracked_class]
+        if STATE.tracked_class is not None and ENGINE.model is not None
+        else None,
+        "distance_to_target": None,
+        "is_recording": TELEMETRY_RECORDER.is_recording,
+    }
+
+
+def build_idle_telemetry_message(base_row: Dict[str, Any]) -> Dict[str, Any]:
+    """Build stable synthetic telemetry for non-tracking state."""
+    idle_roll = random.uniform(-IDLE_ROLL_PITCH_YAW_JITTER, IDLE_ROLL_PITCH_YAW_JITTER)
+    idle_pitch = random.uniform(-IDLE_ROLL_PITCH_YAW_JITTER, IDLE_ROLL_PITCH_YAW_JITTER)
+    idle_yaw = random.uniform(-IDLE_ROLL_PITCH_YAW_JITTER, IDLE_ROLL_PITCH_YAW_JITTER)
+    idle_speed = max(0.0, random.uniform(0.0, IDLE_SPEED_JITTER))
+    idle_altitude = base_row["altitude"] + random.uniform(-IDLE_ALTITUDE_JITTER, IDLE_ALTITUDE_JITTER)
+
+    return {
+        "timestamp": time.time() * 1000.0,
+        "altitude": idle_altitude,
+        "latitude": base_row["latitude"],
+        "longitude": base_row["longitude"],
+        "pitch": idle_pitch,
+        "yaw": idle_yaw,
+        "roll": idle_roll,
+        "speed": idle_speed,
+        # Frontend derives speed using sqrt(dlat^2 + dlon^2 + dalt^2)
+        "dlat": idle_speed,
+        "dlon": 0.0,
+        "dalt": 0.0,
+        "flight_mode": -1,
+        "battery_remaining": None,
+        "battery_voltage": None,
+        "tracking": False,
+        "tracked_class": None,
+        "distance_to_target": None,
+        "is_recording": TELEMETRY_RECORDER.is_recording,
+    }
+
+
+async def csv_telemetry_stream_task():
+    """Stream idle telemetry when not tracking; stream CSV telemetry only while tracking."""
+    if not csv_telemetry_data:
+        print("CSV telemetry stream not started: no telemetry data loaded.")
+        return
+
+    base_idle_row = csv_telemetry_data[0]
+    print("Starting telemetry stream task (idle + tracking CSV)...")
+
+    csv_index = 0
+    was_tracking = False
+    while True:
+        try:
+            # Transition into tracking: restart CSV playback from the beginning.
+            if STATE.tracking and not was_tracking:
+                csv_index = 0
+
+            if not STATE.tracking:
+                await send_data_to_connections(build_idle_telemetry_message(base_idle_row))
+                await asyncio.sleep(TELEMETRY_STREAM_MIN_INTERVAL_SEC)
+                was_tracking = False
+                continue
+
+            row = csv_telemetry_data[csv_index]
+            await send_data_to_connections(build_telemetry_message(row))
+
+            # Follow CSV timing as closely as possible, but never faster than configured minimum.
+            if csv_index < len(csv_telemetry_data) - 1:
+                next_row = csv_telemetry_data[csv_index + 1]
+                delta_sec = max(
+                    0.0,
+                    (next_row["timestamp_ms"] - row["timestamp_ms"]) / 1000.0,
+                )
+                await asyncio.sleep(max(TELEMETRY_STREAM_MIN_INTERVAL_SEC, delta_sec))
+                csv_index += 1
+            else:
+                # Loop CSV while staying in tracking mode.
+                csv_index = 0
+                await asyncio.sleep(TELEMETRY_STREAM_MIN_INTERVAL_SEC)
+
+            was_tracking = True
+        except asyncio.CancelledError:
+            print("CSV telemetry stream task cancelled.")
+            raise
+        except Exception as e:
+            print(f"CSV telemetry stream error: {e}")
+            await asyncio.sleep(1)
 
 async def flight_computer_background_task():
     """Background task that connects to flight computer and listens for telemetry"""
@@ -201,47 +358,39 @@ async def video_streaming_task():
 async def follows_background_task():
     """Background task that manages following target logic"""
     while True:
-        try:
-            if STATE.tracking:
-                # Safely check if we have telemetry data yet
-                if not newest_telemetry:
-                    print("Waiting for telemetry data...")
-                    await asyncio.sleep(1)
-                    continue
+        if STATE.tracking:
+            mode = newest_telemetry.get("mode") or newest_telemetry.get("flight_mode")
+            if mode != "Guided":
+                print("Attempting to enter follows mode...")
+                await send_to_flight_comp({"command": "set_flight_mode", "mode": "Guided"})
+                await asyncio.sleep(2) # Wait for mode change (delay on ArduPilot's side)
+                print("Entered Guided mode for follows.")
 
-                current_mode = newest_telemetry.get('flight_mode')
-                
-                # if current_mode != "Guided":
-                #     print("Please enter guided mode before attempting to follow.")
-                #     continue
-
-                follows_altitude = 15.0 # Hard coding the follows altitude to 15 meters (50 ft) for now
-                if STATE.last_target_lat is not None and STATE.last_target_lon is not None:
-                    try:
-                        await send_to_flight_comp({
-                            "command": "move_to_location", 
-                            "location": {
-                                "lat": STATE.last_target_lat,
-                                "lon": STATE.last_target_lon,
-                                "alt": follows_altitude
-                            }
-                        })  
-                        print(f"Sent follow command to flight computer: lat {STATE.last_target_lat}, lon {STATE.last_target_lon}, alt {follows_altitude}")
-                    except Exception as e:
-                        print(f"Failed to send follow command: {e}")
-                
-        except Exception as e:
-            # This prevents the task from dying silently if a bad packet comes through
-            print(f"Crash prevented in follows task: {e}")
-            traceback.print_exc()
-
+            follows_altitude = 15.0 # Hard coding the follows altitude to 15 meters (50 ft) for now
+            if STATE.last_target_lat is not None and STATE.last_target_lon is not None:
+                try:
+                    await send_to_flight_comp({"command": "move_to_location", "location": {
+                            "lat": STATE.last_target_lat,
+                            "lon": STATE.last_target_lon,
+                            "alt": follows_altitude
+                        }})
+                    print(f"Sent follow command to flight computer: lat {STATE.last_target_lat}, lon {STATE.last_target_lon}, alt {follows_altitude}")
+                except Exception as e:
+                    print(f"Failed to send follow command: {e}")
         await asyncio.sleep(2) # Send follows commands every 2 seconds for now
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start background tasks    
     print("[GCS] Starting background tasks...")
-    tasks = [asyncio.create_task(flight_computer_background_task()), asyncio.create_task(video_streaming_task()), asyncio.create_task(follows_background_task())]
+    global csv_telemetry_data
+    csv_telemetry_data = load_csv_telemetry()
+
+    tasks = [
+        asyncio.create_task(csv_telemetry_stream_task()),
+        asyncio.create_task(video_streaming_task()),
+        asyncio.create_task(follows_background_task()),
+    ]
     global process_frame_executor
     process_frame_executor = ThreadPoolExecutor(max_workers=1)
     yield
@@ -282,10 +431,10 @@ async def send_data_to_connections(
     message: dict, websockets_list: List[WebSocket] = active_connections
 ):
     """Send message to all connected WebSocket clients"""
-    for websocket in websockets_list:
+    for websocket in list(websockets_list):
         try:
             await websocket.send_text(json.dumps(message))
-        except:
+        except Exception:
             if websocket in websockets_list:
                 websockets_list.remove(websocket)
 
@@ -349,7 +498,7 @@ async def set_follow_distance(request: dict = Body(...)):
     if distance is None:
         raise HTTPException(status_code=400, detail="Missing 'distance' in body")
     try:
-        await send_data_to_connections({"command": "set_follow_distance", "distance": distance}, flight_comp_ws)
+        await send_to_flight_comp({"command": "set_follow_distance", "distance": distance})
         return {"status": 200, "message": f"Follow distance set to {distance} meters"}
     except Exception as e:
         raise HTTPException(
@@ -365,7 +514,7 @@ async def set_flight_mode(request: dict = Body(...)):
     if not mode:
         raise HTTPException(status_code=400, detail="Missing 'mode' in body")
     try:
-        await send_data_to_connections({"command": "set_flight_mode", "mode": mode}, flight_comp_ws)
+        await send_to_flight_comp({"command": "set_flight_mode", "mode": mode})
         return {"status": 200, "message": f"Flight mode set to {mode}"}
     except Exception as e:
         print("Sent request to change mode but failed at the flight computer.")
@@ -377,7 +526,7 @@ async def stop_following():
     try:
         save_current_recording()
         STATE.reset_tracking()
-        await send_data_to_connections({"command": "stop_following"}, flight_comp_ws)
+        await send_to_flight_comp({"command": "stop_following"})
         return {"status": 200, "message": "Stopped following the target."}
     except Exception as e:
         raise HTTPException(
