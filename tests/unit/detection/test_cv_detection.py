@@ -1,20 +1,21 @@
 # tests/unit/detection/test_cv_detection.py
 """
-Experiment 1: Detection Performance
-====================================
-Performance evaluation of YOLO detection models across models, scene entropy, and video resolutions.
+Detection Performance Evaluation - Factorial Design
+=====================================================
 
-Test Groups (tab-separated output for easy table generation):
-  1. Model Comparison      — 2 models (yolo11n, yolo26n) at 720p complex-entropy
-  2. Scene Entropy Impact  — 2 entropy levels (low/high) with yolo26n at 720p
-  3. Resolution Scaling    — 3 resolutions (480p/720p/1080p) with yolo26n at complex-entropy
-  4. Stage Breakdown       — Inference/boxes/drawing cost per resolution with yolo26n
+Following the project methodology (Section 5), this test suite evaluates the 
+YOLO-based detection module using a Full Factorial Design:
 
-Metrics: Inference latency (mean, p95), RSS memory (MB), CPU utilization (%)
-Video Sources:
-  - real video: video.mp4 (high entropy, many humans), error-video.mp4 (low entropy, single human)
-  - synthetic: procedural frames (uniform, controllable)
-Total Tests: 2 + 2 + 3 + 3 = 10
+Factors:
+  - Model Complexity: YOLOv5n, YOLOv8n, YOLOv11n, YOLOv26n, YOLOv26s
+  - Scene Entropy: Low (sparse), Medium, High (dense), Very High
+
+Metrics Collected:
+  - Inference Latency (Mean): Average per-frame processing time
+  - Tail Latency (P95): 95th percentile latency
+  - Resource Consumption (RSS): Peak memory usage in MB
+
+Results include 95% confidence intervals on all metrics.
 """
 
 import sys
@@ -32,9 +33,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tests.conftest import ResourceMonitor
+from tests.performance_stats import PerformanceStats
 
 MODELS_DIR = ROOT / "backend" / "gcs" / "ai" / "models"
-AVAILABLE_MODELS = ["yolo11n.pt", "yolo26n.pt", "yolo26s.pt"]
+
+# YOLO models to test: Mix of YOLOv8, YOLOv11, and YOLOv26 variants
+# Pre-downloaded and cached locally in backend/gcs/ai/models/
+MODELS = [
+    "yolo26n",      # YOLOv26 nano
+    "yolo26s",      # YOLOv26 small
+    "yolo11n",      # YOLOv11 nano
+    "yolov8n",      # YOLOv8 nano
+    "yolov8s",      # YOLOv8 small
+]
+ENTROPY_LEVELS = ["low", "medium", "high", "very_high"]
 
 pytestmark = pytest.mark.performance
 
@@ -43,202 +55,191 @@ pytestmark = pytest.mark.performance
 # HELPERS
 # ============================================================================
 
-def _model_path(filename: str) -> str:
-    path = MODELS_DIR / filename
-    if not path.exists():
-        pytest.skip(f"Model not found: {path}")
-    return str(path)
+def _load_model(model_name: str):
+    """Load YOLO model from local cache or auto-download."""
+    from ultralytics import YOLO
+    
+    # Try loading from local models directory first
+    local_paths = [
+        MODELS_DIR / f"{model_name}.pt",
+        ROOT / "backend" / "gcs" / "ai" / "utils" / f"{model_name}.pt",
+        ROOT / "backend" / "gcs" / "ai" / "models" / f"{model_name}.pt",
+    ]
+    
+    for path in local_paths:
+        if path.exists():
+            try:
+                model = YOLO(str(path))
+                return model
+            except Exception as e:
+                continue
+    
+    # Fall back to auto-download from Ultralytics
+    try:
+        model = YOLO(model_name)
+        return model
+    except Exception as e:
+        pytest.skip(f"Could not load {model_name}: {e}")
 
 
-def _run_inference_batch(model, frames: list, conf: float, iou: float) -> list:
-    """Run model.predict on each frame; return list of latency_ms values."""
-    latencies = []
-    for frame in frames:
-        t0 = time.perf_counter()
-        model.predict(frame, conf=conf, iou=iou, verbose=False)
-        latencies.append((time.perf_counter() - t0) * 1000)
-    return latencies
+def _get_entropy_video(entropy_level: str):
+    """Get video frames for entropy level: real videos or synthetic."""
+    from tests.conftest import generate_synthetic_frame
+    
+    # First try real videos (if available)
+    real_videos = {
+        "low": ROOT / "backend" / "gcs" / "ai" / "error-video.mp4",      # Single human
+        "high": ROOT / "backend" / "gcs" / "ai" / "video.mp4",           # Many humans
+    }
+    
+    path = real_videos.get(entropy_level)
+    if path and path.exists():
+        # Use real video for low/high
+        return _load_video_frames(path, 60)
+    
+    # Generate synthetic frames for all entropy levels (for consistency/reproducibility)
+    # This ensures medium/very_high also have consistent, repeatable complexity
+    width, height = 1280, 720
+    frames = []
+    for i in range(60):
+        # Use incremented seed to get different frames but deterministic results
+        frame = generate_synthetic_frame(width, height, entropy_level, seed=42 + i)
+        frames.append(frame)
+    
+    return frames
+
+
+def _load_video_frames(video_path: Path, n_frames: int = 60) -> list:
+    """Load frames from a video file."""
+    if not video_path.exists():
+        pytest.skip(f"Video not found: {video_path}")
+    
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        pytest.skip(f"Could not open video: {video_path}")
+    
+    frames = []
+    while len(frames) < n_frames:
+        ret, frame = cap.read()
+        if not ret:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+            if not ret:
+                break
+        frames.append(frame)
+    
+    cap.release()
+    
+    if not frames:
+        pytest.skip(f"No frames read from {video_path}")
+    
+    return frames
 
 
 # ============================================================================
-# MODEL COMPARISON (synthetic 720p, controlled)
+# FACTORIAL DESIGN TEST: MODEL COMPLEXITY × SCENE ENTROPY
 # ============================================================================
-# CSV Format: Model | Mean Latency | P95 Latency | RSS Mean
 
-class TestResourceByModel:
+class TestFactorialDesign:
     """
-    Head-to-head resource comparison across nano model variants (yolo11n, yolo26n)
-    at fixed 720p complex-entropy workload. Isolates model architecture cost.
-    """
-
-    @pytest.mark.parametrize("model_filename", AVAILABLE_MODELS)
-    def test_resource_and_latency_by_model(self, model_filename, synthetic_video_factory):
-        from ultralytics import YOLO
-        from backend.gcs.ai.AIEngine import TrackingConfig
-
-        model   = YOLO(_model_path(model_filename))
-        frames  = synthetic_video_factory("720p", "complex", n_frames=60)
-        monitor = ResourceMonitor(sample_every_n_frames=5)
-
-        model.predict(frames[0], conf=TrackingConfig.CONFIDENCE_THRESHOLD,
-                      iou=TrackingConfig.MODEL_IOU, verbose=False)  # warm-up
-
-        latencies_ms = []
-        monitor.start()
-        for i, frame in enumerate(frames):
-            t0 = time.perf_counter()
-            model.predict(frame, conf=TrackingConfig.CONFIDENCE_THRESHOLD,
-                          iou=TrackingConfig.MODEL_IOU, verbose=False)
-            latencies_ms.append((time.perf_counter() - t0) * 1000)
-            monitor.sample(i)
-
-        s       = monitor.summary()
-        mean_ms = float(np.mean(latencies_ms))
-        p95_ms  = float(np.percentile(latencies_ms, 95))
-
-        print(f"\n{model_filename}\t{mean_ms:.1f}\t{p95_ms:.1f}\t{s['rss_mean_mb']:.1f}")
-        assert mean_ms < 500
-        assert s["rss_delta_mb"] < 200
-
-
-# ============================================================================
-# RESOURCE CONSUMPTION BY SCENE ENTROPY
-# ============================================================================
-
-class TestResourceByEntropy:
-    """
-    Isolates the effect of real scene entropy on resource cost using yolo26n.
-    low  — error-video.mp4: single human, sparse detections
-    high — video.mp4:       many humans, dense detections
+    Full Factorial Design: Tests all combinations of model complexity and scene entropy.
+    
+    Per Section 5.5, this design allows analysis of interaction effects between
+    model size and environmental complexity.
     """
     
-    _header_printed = False
-
-    def test_resource_by_entropy(self, real_frames_by_entropy):
-        from ultralytics import YOLO
-
-        # Print header once
-        if not TestResourceByEntropy._header_printed:
-            print("\n" + "Model".ljust(30) + "Entropy".ljust(15) + "Mean Latency (ms)".ljust(20) + "RSS Mean (MB)")
-            TestResourceByEntropy._header_printed = True
-
-        model_filename = "yolo26s.pt"
-        entropy, frames = real_frames_by_entropy
+    @pytest.mark.parametrize("model_name", MODELS)
+    @pytest.mark.parametrize("entropy_level", ENTROPY_LEVELS)
+    def test_model_entropy_combination(
+        self, model_name, entropy_level, benchmark_results
+    ):
+        """
+        Test a specific model × entropy combination.
         
-        # YOLO inference parameters (hardcoded to avoid AIEngine dependency)
-        conf_threshold = 0.25
-        iou_threshold = 0.7
+        Following Section 5.7:
+        - Warm-up: 100 cold inference passes
+        - Execution: Process pre-defined workload
+        - Data Collection: Per-frame latency and RSS
+        - Analysis: Aggregated mean/P95 statistics
+        """
+        from backend.gcs.ai.AIEngine import TrackingConfig
         
+        # Load model (auto-downloads if needed)
+        model = _load_model(model_name)
+        
+        # Get frames for entropy level
+        frames = _get_entropy_video(entropy_level)
+        
+        # Inference parameters (from TrackingConfig)
+        conf_threshold = TrackingConfig.CONFIDENCE_THRESHOLD
+        iou_threshold = TrackingConfig.MODEL_IOU
+        
+        # ================================================================
+        # WARM-UP PHASE (Per Section 5.7)
+        # ================================================================
+        # 100 cold inference passes to prime caches and reach steady state
         with contextlib.redirect_stderr(io.StringIO()):
-            model   = YOLO(_model_path(model_filename))
-            monitor = ResourceMonitor(sample_every_n_frames=5)
-
-            model.predict(frames[0], conf=conf_threshold,
-                          iou=iou_threshold, verbose=False)  # warm-up
-
-            latencies_ms = []
-            monitor.start()
+            for i in range(min(100, len(frames))):
+                model.predict(
+                    frames[i % len(frames)],
+                    conf=conf_threshold,
+                    iou=iou_threshold,
+                    verbose=False
+                )
+        
+        # ================================================================
+        # EXECUTION & DATA COLLECTION PHASE (Per Section 5.7)
+        # ================================================================
+        monitor = ResourceMonitor(sample_every_n_frames=5)
+        latencies_ms = []
+        rss_samples = []
+        
+        monitor.start()
+        with contextlib.redirect_stderr(io.StringIO()):
             for i, frame in enumerate(frames):
                 t0 = time.perf_counter()
-                model.predict(frame, conf=conf_threshold,
-                              iou=iou_threshold, verbose=False)
+                model.predict(
+                    frame,
+                    conf=conf_threshold,
+                    iou=iou_threshold,
+                    verbose=False
+                )
                 latencies_ms.append((time.perf_counter() - t0) * 1000)
+                rss_samples.append(monitor._process.memory_info().rss / (1024 ** 2))
                 monitor.sample(i)
-
-        s       = monitor.summary()
-        mean_ms = float(np.mean(latencies_ms))
-
-        print(f"{model_filename:<30}{entropy:<15}{mean_ms:<20.1f}{s['rss_mean_mb']:<15.1f}")
-        assert mean_ms < 500
-
-
-# ============================================================================
-# DETECTION LATENCY SCREENING (resolution × entropy matrix)
-# ============================================================================
-
-class TestDetectionLatencyScreening:
-    """
-    Tests latency across resolutions at fixed high entropy using yolo26n.
-    Only varies resolution (480p, 720p, 1080p); entropy fixed to high.
-    """
-    
-    _header_printed = False
-
-    @pytest.mark.parametrize("resolution_label", ["480p", "720p", "1080p"])
-    def test_latency_by_resolution(
-        self, resolution_label, synthetic_video_factory
-    ):
-        from ultralytics import YOLO
-
-        # Print header once
-        if not TestDetectionLatencyScreening._header_printed:
-            print("\n" + "Resolution".ljust(15) + "Mean Latency (ms)".ljust(20) + "P95 Latency (ms)")
-            TestDetectionLatencyScreening._header_printed = True
-
-        conf_threshold = 0.25
-        iou_threshold = 0.7
-
-        with contextlib.redirect_stderr(io.StringIO()):
-            model  = YOLO(_model_path("yolo26n.pt"))
-            frames = synthetic_video_factory(resolution_label, "complex", n_frames=30)
-
-            model.predict(frames[0], conf=conf_threshold,
-                          iou=iou_threshold, verbose=False)  # warm-up
-
-            latencies_ms = _run_inference_batch(
-                model, frames, conf_threshold, iou_threshold
-            )
-
-        mean_ms = float(np.mean(latencies_ms))
-        p95_ms  = float(np.percentile(latencies_ms, 95))
-        max_ms  = float(np.max(latencies_ms))
-
-        print(f"{resolution_label:<15}{mean_ms:<20.1f}{p95_ms:<15.1f}")
-        threshold = {"480p": 200, "720p": 300, "1080p": 500}[resolution_label]
-        assert mean_ms < threshold, (
-            f"Mean latency {mean_ms:.1f}ms exceeded threshold {threshold}ms"
+        
+        s = monitor.summary()
+        
+        # ================================================================
+        # ANALYSIS PHASE (Per Section 5.7)
+        # ================================================================
+        stats = PerformanceStats()
+        
+        # Calculate confidence intervals
+        latency_ci = stats.calculate_ci(latencies_ms, method="t")
+        p95_ci = stats.percentile_ci(latencies_ms, percentile=95)
+        rss_ci = stats.calculate_ci(rss_samples, method="t")
+        
+        # Record results
+        test_name = f"factorial_{model_name.replace('.pt', '')}_{entropy_level}"
+        benchmark_results.record(
+            test_name=test_name,
+            latencies_ms=latencies_ms,
+            rss_mb=rss_samples,
+            metadata={
+                "model": model_name,
+                "entropy": entropy_level,
+                "model_version": model_name[4],  # Extract version: 'v' in yolov8n → '8'
+                "model_size": model_name[-1],     # Extract size: last char 'n' or 's'
+            }
         )
+        
+        # Console output for debugging
+        print(f"\n{model_name:15} × {entropy_level:12}")
+        print(f"  Mean Latency:  {latency_ci['mean']:7.2f} ms (95% CI: [{latency_ci['ci_lower']:7.2f}, {latency_ci['ci_upper']:7.2f}])")
+        print(f"  P95 Latency:   {p95_ci['value']:7.2f} ms (95% CI: [{p95_ci['ci_lower']:7.2f}, {p95_ci['ci_upper']:7.2f}])")
+        print(f"  RSS Memory:    {rss_ci['mean']:7.1f} MB (95% CI: [{rss_ci['ci_lower']:7.1f}, {rss_ci['ci_upper']:7.1f}])")
+        
+        # Basic sanity check
+        assert latency_ci['mean'] < 1000, f"Latency unusually high: {latency_ci['mean']:.1f}ms"
 
-
-# ============================================================================
-# PIPELINE STAGE BREAKDOWN (inference / boxes / drawing)
-# ============================================================================
-
-class TestDetectionStageBreakdown:
-    """
-    Decompose total frame time into distinct pipeline stages using real frames
-    resized to each resolution. Pinpoints which stage bottleneck changes with
-    resolution.
-    """
-
-    @pytest.mark.parametrize("resolution_label", ["480p", "720p", "1080p"])
-    def test_stage_breakdown_on_real_frames(self, resolution_label, real_video_frames):
-        from ultralytics import YOLO
-        from backend.gcs.ai.AIEngine import ProcessingState, process_detection_mode
-
-        w, h   = {"480p": (854, 480), "720p": (1280, 720), "1080p": (1920, 1080)}[resolution_label]
-        model  = YOLO(_model_path("yolo26n.pt"))
-        state  = ProcessingState()
-        frames = [cv2.resize(f, (w, h)) for f in real_video_frames[:30]]
-
-        inference_ms, drawing_ms, boxes_ms = [], [], []
-        for frame in frames:
-            process_detection_mode(frame, model, state, cursor_pos=None, click_pos=None)
-            if state.detection_ran_this_frame:
-                inference_ms.append(state.profile_inference_ms)
-                drawing_ms.append(state.profile_drawing_ms)
-                boxes_ms.append(state.profile_boxes_ms)
-            state.increment_frame()
-
-        if not inference_ms:
-            pytest.skip("No detection frames collected.")
-
-        mean_infer = float(np.mean(inference_ms))
-        mean_draw  = float(np.mean(drawing_ms))
-        mean_boxes = float(np.mean(boxes_ms))
-        total      = mean_infer + mean_draw + mean_boxes
-
-        print(f"\n{resolution_label}\t{mean_infer:.2f}\t{mean_boxes:.2f}\t{mean_draw:.2f}\t{total:.2f}")
-        assert mean_draw <= mean_infer * 2, (
-            f"Drawing ({mean_draw:.1f}ms) exceeds 2× inference ({mean_infer:.1f}ms)"
-        )

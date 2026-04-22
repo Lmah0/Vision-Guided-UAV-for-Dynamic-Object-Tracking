@@ -13,6 +13,8 @@ Provides:
 """
 
 from pathlib import Path
+import json
+from typing import Optional, Dict, List
 import cv2
 import numpy as np
 import psutil
@@ -28,6 +30,9 @@ RESOLUTIONS = {
     "720p":  (1280, 720),
     "1080p": (1920, 1080),
 }
+
+# Global results collector
+BENCHMARK_RESULTS = {}
 
 
 # ============================================================================
@@ -99,18 +104,38 @@ def compute_iou(b1: tuple, b2: tuple) -> float:
 # FRAME / VIDEO GENERATORS
 # ============================================================================
 
-def generate_synthetic_frame(width: int, height: int, scene_entropy: str = "simple") -> np.ndarray:
+def generate_synthetic_frame(width: int, height: int, scene_entropy: str = "simple", seed: int = 42) -> np.ndarray:
     """
-    'simple'  = uniform sky-blue gradient (open sky, minimal texture).
-    'complex' = random noise + rectangular structures (urban environment).
+    Generate synthetic frames with varying complexity levels.
+    
+    'low'       = minimal texture (open sky)
+    'medium'    = moderate complexity (10 random rectangles)
+    'high'      = high complexity (20 random rectangles, denser)
+    'very_high' = maximum complexity (40+ rectangles, very dense texture)
+    
+    Args:
+        seed: Random seed for reproducibility (incremented per frame enables variation)
     """
-    if scene_entropy == "simple":
+    rng = np.random.default_rng(seed)
+    
+    if scene_entropy == "low":
+        # Uniform sky-blue gradient (minimal texture)
         frame = np.zeros((height, width, 3), dtype=np.uint8)
         frame[:, :, 0] = 135
         frame[:, :, 1] = 206
         frame[:, :, 2] = 235
-    elif scene_entropy == "complex":
-        rng = np.random.default_rng(seed=42)
+    elif scene_entropy == "medium":
+        # Moderate noise + 10 rectangles
+        frame = rng.integers(50, 150, (height, width, 3), dtype=np.uint8)
+        for _ in range(10):
+            x1 = int(rng.integers(0, max(1, width  - 50)))
+            y1 = int(rng.integers(0, max(1, height - 50)))
+            x2 = int(rng.integers(x1 + 10, min(x1 + 100, width)))
+            y2 = int(rng.integers(y1 + 10, min(y1 + 100, height)))
+            color = tuple(int(c) for c in rng.integers(0, 255, 3))
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+    elif scene_entropy == "high":
+        # Higher noise + 20 rectangles (previous "complex")
         frame = rng.integers(50, 200, (height, width, 3), dtype=np.uint8)
         for _ in range(20):
             x1 = int(rng.integers(0, max(1, width  - 50)))
@@ -119,6 +144,19 @@ def generate_synthetic_frame(width: int, height: int, scene_entropy: str = "simp
             y2 = int(rng.integers(y1 + 10, min(y1 + 100, height)))
             color = tuple(int(c) for c in rng.integers(0, 255, 3))
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+    elif scene_entropy == "very_high":
+        # Maximum noise + 40+ overlapping rectangles (very dense)
+        frame = rng.integers(50, 255, (height, width, 3), dtype=np.uint8)
+        for _ in range(40):
+            x1 = int(rng.integers(0, max(1, width  - 30)))
+            y1 = int(rng.integers(0, max(1, height - 30)))
+            x2 = int(rng.integers(x1 + 5, min(x1 + 80, width)))
+            y2 = int(rng.integers(y1 + 5, min(y1 + 80, height)))
+            color = tuple(int(c) for c in rng.integers(0, 255, 3))
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+        # Add additional texture overlay
+        noise = rng.integers(0, 50, (height, width, 3), dtype=np.uint8)
+        frame = cv2.addWeighted(frame, 0.7, noise, 0.3, 0)
     else:
         raise ValueError(f"Unknown scene_entropy: '{scene_entropy}'")
     return frame
@@ -318,3 +356,83 @@ def tracking_sequence_factory():
             w, h, n_frames, motion_speed, bbox_size, occlusion_fraction
         )
     return _factory
+
+
+# ============================================================================
+# BENCHMARK RESULT COLLECTION
+# ============================================================================
+
+class BenchmarkResultCollector:
+    """
+    Centralized benchmark result storage and reporting.
+    Collects latency, memory, and CPU metrics across all test runs.
+    """
+    
+    def __init__(self):
+        self.results = {}  # {test_name: {latencies, memory, cpu, metadata}}
+    
+    def record(
+        self,
+        test_name: str,
+        latencies_ms: List[float],
+        rss_mb: Optional[List[float]] = None,
+        cpu_pct: Optional[List[float]] = None,
+        metadata: Optional[Dict] = None
+    ):
+        """Record benchmark result for a single test."""
+        self.results[test_name] = {
+            "latencies_ms": list(latencies_ms),
+            "rss_mb": list(rss_mb) if rss_mb else None,
+            "cpu_pct": list(cpu_pct) if cpu_pct else None,
+            "metadata": metadata or {}
+        }
+    
+    def save_json(self, filepath: Path):
+        """Save all results to JSON."""
+        output_path = Path(filepath)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w') as f:
+            json.dump(self.results, f, indent=2)
+        print(f"✓ Saved benchmark results to {output_path}")
+    
+    def get_summary(self, test_name: str) -> Dict:
+        """Get statistical summary for a single test."""
+        try:
+            from tests.performance_stats import BenchmarkResult
+            result = self.results[test_name]
+            br = BenchmarkResult(
+                name=test_name,
+                latencies_ms=result["latencies_ms"],
+                rss_mb=result["rss_mb"],
+                cpu_pct=result["cpu_pct"],
+                metadata=result["metadata"]
+            )
+            return br.summary()
+        except Exception as e:
+            print(f"Warning: Could not generate summary for {test_name}: {e}")
+            return {}
+    
+    def get_all_summaries(self) -> Dict[str, Dict]:
+        """Get statistical summaries for all tests."""
+        return {name: self.get_summary(name) for name in self.results}
+
+
+# Global collector instance
+_benchmark_collector = BenchmarkResultCollector()
+
+
+@pytest.fixture(scope="session")
+def benchmark_results():
+    """Fixture providing access to the global results collector."""
+    return _benchmark_collector
+
+
+# Hook to save results after all tests
+def pytest_sessionfinish(session, exitstatus):
+    """Export benchmark results as CSV tables and matplotlib plots only."""
+    try:
+        from tests.results_exporter import export_results
+        export_results(_benchmark_collector.get_all_summaries())
+    except Exception as e:
+        print(f"Warning: Could not export results: {e}")
+
