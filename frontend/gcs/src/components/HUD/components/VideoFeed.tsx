@@ -34,12 +34,31 @@ export default function VideoFeed() {
             pcRef.current = pc;
 
             // Handle connection state changes
+            let statsInterval: ReturnType<typeof setInterval> | null = null;
             pc.onconnectionstatechange = () => {
                 setConnectionState(pc.connectionState);
                 if (pc.connectionState === 'connected') {
                     setIsWebRTCStreaming(true);
                     setError(null);
+
+                    statsInterval = setInterval(async () => {
+                        try {
+                            const stats = await pc.getStats();
+                            stats.forEach((report) => {
+                                if (report.type === 'inbound-rtp' && report.kind === 'video') {
+                                    console.log(JSON.stringify({
+                                        timestamp_ms: report.timestamp,
+                                        framesReceived: report.framesReceived ?? null,
+                                        framesDropped: report.framesDropped ?? null,
+                                        framesPerSecond: report.framesPerSecond ?? null,
+                                    }));
+                                }
+                            });
+                        } catch (_) {}
+                    }, 1000);
+
                 } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                    if (statsInterval) { clearInterval(statsInterval); statsInterval = null; }
                     setIsWebRTCStreaming(false);
                     // Attempt reconnection after a delay
                     setTimeout(startWebRTC, 3000);

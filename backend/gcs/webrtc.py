@@ -8,10 +8,17 @@ import time
 import numpy as np
 import traceback
 import threading
+from collections import deque
 
 # Frame buffer for video streaming
 _frame_lock = threading.Lock()
 _current_frame = None
+_frame_write_time = None # Timestamp when write_frame() was last called
+
+# Benchmark stats
+_stats_lock = threading.Lock()
+_latency_samples = deque(maxlen=10000) # per-frame server latency (ms)
+_frames_sent = 0  # total frames sent
 
 # WebRTC peer connections
 _peer_connections = set()
@@ -33,11 +40,19 @@ class AIVideoStreamTrack(VideoStreamTrack):
                 self._start = time.time()
 
             pts, time_base = await self.next_timestamp()
-            
-            # Read frame from buffer
-            global _current_frame, _frame_lock
+
+            global _current_frame, _frame_lock, _frame_write_time
             with _frame_lock:
                 frame = _current_frame.copy() if _current_frame is not None else None
+                write_time = _frame_write_time
+
+            # Measure server-side latency (from when frame recieved from AI Pipeline to WebRTC send)
+            if write_time is not None:
+                latency_ms = (time.time() - write_time) * 1000 
+                global _stats_lock, _latency_samples, _frames_sent
+                with _stats_lock:
+                    _latency_samples.append(latency_ms)
+                    _frames_sent += 1
 
             if frame is None:
                 frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -95,11 +110,24 @@ async def handle_offer(offer: RTCOffer):
     }
 
 
+@webrtc_router.get("/webrtc/stats")
+def get_webrtc_stats():
+    """Return accumulated server-side latency samples and frame count, then reset."""
+    global _latency_samples, _frames_sent, _stats_lock
+    with _stats_lock:
+        samples = list(_latency_samples)
+        sent = _frames_sent
+        _latency_samples.clear()
+        _frames_sent = 0
+    return {"latency_samples_ms": samples, "frames_sent": sent}
+
+
 def write_frame(frame):
     """Write a frame to the shared buffer for WebRTC streaming."""
-    global _current_frame, _frame_lock
+    global _current_frame, _frame_lock, _frame_write_time
     with _frame_lock:
         _current_frame = frame
+        _frame_write_time = time.time()
 
 
 def get_peer_connections():
